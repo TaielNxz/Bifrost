@@ -39,7 +39,8 @@ s3 = boto3.client(
     config=Config(signature_version="s3v4"),
 )
 
-def comprimir_mundo(destino_zip: str = "world.zip") -> str:
+
+def crear_zip(destino_zip: str = "world.zip") -> str:
     # Chekea que esté la variable de entorno
     nombre = os.getenv("VALHEIM_WORLD_NAME")
     if not nombre:
@@ -66,13 +67,26 @@ def comprimir_mundo(destino_zip: str = "world.zip") -> str:
     return destino_zip
 
 
-def construir_manifest(
+def crear_manifest(
     ruta_zip: str,
     ruta_manifest: str = "manifest.json",
     nombre_mundo: str = "MundoPrueba",
     version: int = 1,
     uploaded_by: str | None = None,
 ) -> str:
+    
+    # Función interna para calcular el SHA-256 de un archivo
+    def calcular_sha256(ruta_archivo: str, bloque: int = 1024 * 1024) -> str:
+        import hashlib
+        h = hashlib.sha256()
+        with open(ruta_archivo, "rb") as f:
+            while True:
+                datos = f.read(bloque)
+                if not datos:
+                    break
+                h.update(datos)
+        return h.hexdigest()   
+    
     # Si no se especifica quien subió el archivo, se usa el hostname de la máquina
     if uploaded_by is None:
         uploaded_by = socket.gethostname()
@@ -100,7 +114,61 @@ def construir_manifest(
     return ruta_manifest
 
 
+def subir_zip(ruta_local: str, ruta_bucket: str = KEY_ZIP) -> None:
+    # Chusmea que exista el archivo
+    if not os.path.isfile(ruta_local):
+        raise FileNotFoundError(f"No existe el ZIP: {ruta_local}")
+
+    # Sube el ZIP a R2 usando multipart upload si es necesario
+    with open(ruta_local, "rb") as f:
+        s3.upload_fileobj(f, _BUCKET, ruta_bucket)
+
+    # Feedback al usuario
+    tamano = os.path.getsize(ruta_local)
+    print(f"[subir_zip] Subiendo '{ruta_local}' ({tamano} bytes) → s3://{_BUCKET}/{ruta_bucket}")
+    print(f"[subir_zip] OK")
+
+
+def subir_manifest(ruta_local: str, ruta_bucket: str = KEY_MANIFEST) -> None:
+    # Chusmea que exista el archivo
+    if not os.path.isfile(ruta_local):
+        raise FileNotFoundError(f"No existe el manifest: {ruta_local}")
+
+    # Lee el archivo JSON
+    with open(ruta_local, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    # Serializa el manifest a bytes y lo sube a R2
+    cuerpo = json.dumps(manifest, indent=4, ensure_ascii=False).encode("utf-8")
+    s3.put_object(
+        Bucket=_BUCKET,
+        Key=ruta_bucket,
+        Body=cuerpo,
+        ContentType="application/json",
+    )
+
+    # Feedback al usuario
+    tamano = os.path.getsize(ruta_local)
+    print(f"[subir_manifest] Subiendo '{ruta_local}' (versión {manifest['version']}, {tamano} bytes) → s3://{_BUCKET}/{ruta_bucket}")
+    print(f"[subir_manifest] OK")
+
+
 if __name__ == "__main__":
     imprimir_mundos()
-    zip_path = comprimir_mundo()
-    manifest_path = construir_manifest(zip_path, nombre_mundo=str(world_name), version=1) 
+
+    # 1. Comprimir el mundo
+    zip_path = crear_zip()
+
+    # 2. Construir el manifest (y guardarlo en disco)
+    manifest_path = crear_manifest(
+        ruta_zip=zip_path,
+        ruta_manifest="manifest.json",
+        nombre_mundo=str(world_name),
+        version=1,
+    )
+
+    # 3. Subir ZIP primero
+    subir_zip(zip_path)
+
+    # 4. Subir manifest después
+    subir_manifest(manifest_path)
