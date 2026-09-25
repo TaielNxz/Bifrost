@@ -15,7 +15,7 @@ access_key  = os.getenv("R2_ACCESS_KEY_ID")
 secret_key  = os.getenv("R2_SECRET_ACCESS_KEY")
 bucket      = os.getenv("R2_BUCKET")
 worlds_path = os.getenv("VALHEIM_WORLDS_PATH")
-word_name = os.getenv("VALHEIM_WORD_NAME")
+world_name = os.getenv("VALHEIM_WORLD_NAME")
 
 # Creamos un cliente S3 para interactuar con el bucket de R2
 s3 = boto3.client(
