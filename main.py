@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from datetime import datetime, timezone
 
 from local_valheim import buscar_mundo, imprimir_mundos
+from paths import key_current_zip, key_manifest
 
 
 # ==========================================================================
@@ -94,7 +95,7 @@ def crear_manifest(
     manifest = {
         "version":     version,
         "world":       nombre_mundo,
-        "filename":    "current/world.zip",
+        "filename":    key_current_zip(nombre_mundo),
         "size":        os.path.getsize(ruta_zip),
         "sha256":      calcular_sha256(ruta_zip),
         "uploaded_by": uploaded_by,
@@ -112,7 +113,7 @@ def crear_manifest(
 # Subida a R2
 # ==========================================================================
 
-def subir_zip(ruta_local: str, ruta_bucket: str = "world.zip") -> None:
+def subir_zip(ruta_local: str, ruta_bucket: str) -> None:
     if not os.path.isfile(ruta_local):
         raise FileNotFoundError(f"No existe el ZIP: {ruta_local}")
 
@@ -127,7 +128,7 @@ def subir_zip(ruta_local: str, ruta_bucket: str = "world.zip") -> None:
 
 
 
-def subir_manifest(ruta_local: str, ruta_bucket: str = "manifest.json") -> None:
+def subir_manifest(ruta_local: str, ruta_bucket: str) -> None:
     if not os.path.isfile(ruta_local):
         raise FileNotFoundError(f"No existe el manifest: {ruta_local}")
 
@@ -168,5 +169,5 @@ if __name__ == "__main__":
         version=1,
     )
 
-    subir_zip(zip_path)
-    subir_manifest(manifest_path)
+    subir_zip(zip_path, key_current_zip(world_name))
+    subir_manifest(manifest_path, key_manifest(world_name))
