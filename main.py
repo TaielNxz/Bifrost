@@ -6,6 +6,7 @@ import zipfile
 
 import boto3
 from botocore.client import Config
+from botocore.exceptions import ClientError 
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 
@@ -39,7 +40,9 @@ s3 = boto3.client(
 # ==========================================================================
 
 def calcular_sha256(ruta_archivo: str, bloque: int = 1024 * 1024) -> str:
-    """Calcula el SHA-256 de un archivo leyéndolo por bloques de 1 MB."""
+    """
+    Calcula el SHA-256 de un archivo leyéndolo por bloques de 1 MB.
+    """
     h = hashlib.sha256()
     with open(ruta_archivo, "rb") as f:
         while True:
@@ -49,19 +52,52 @@ def calcular_sha256(ruta_archivo: str, bloque: int = 1024 * 1024) -> str:
             h.update(datos)
     return h.hexdigest()
 
+def leer_manifest_remoto(nombre_mundo: str) -> dict | None:
+    """
+    Lee el manifest de un mundo desde R2. \n
+    Devuelve None si no existe (primer push).
+    """
+    try:
+        resp = s3.get_object(Bucket=bucket, Key=key_manifest(nombre_mundo))
+        return json.loads(resp["Body"].read().decode("utf-8"))
+    except ClientError:
+        return None
+
+def listar_mundos_remotos() -> list[str]:
+    """
+    Lista los nombres de mundos que existen en la nube.
+    Usa Delimiter='/' para obtener solo las 'carpetas' de primer nivel
+    dentro de worlds/, no todos los objetos anidados.
+    """
+    resp = s3.list_objects_v2(
+        Bucket=bucket,
+        Prefix="worlds/",
+        Delimiter="/",
+    )
+    prefijos = resp.get("CommonPrefixes", [])
+    nombres = [p["Prefix"].rstrip("/").split("/")[-1] for p in prefijos]
+    return sorted(nombres, key=str.lower)
+
+def parsear_fecha_iso(fecha: str) -> datetime:
+    """
+    Convierte la fecha ISO 8601 a un datetime aware en UTC. \n
+    ej: '2026-09-24T22:30:00Z' -> datetime.datetime(2026, 9, 24, 22, 30, tzinfo=datetime.timezone.utc) \n
+    El 'replace' es porque fromisoformat no acepta la 'Z' directamente
+    en algunas versiones de Python.
+    """
+    return datetime.fromisoformat(fecha.replace("Z", "+00:00"))
 
 # ==========================================================================
-# Comprimir el mundo
+# Funciones para el PUSH
 # ==========================================================================
 
-def crear_zip(destino_zip: str = "world.zip") -> str:
-    nombre = os.getenv("VALHEIM_WORLD_NAME")
-    if not nombre:
-        raise RuntimeError("Falta VALHEIM_WORLD_NAME en el archivo .env")
+def crear_zip(nombre_mundo: str, destino_zip: str | None = None) -> str:
+    if destino_zip is None:
+        destino_zip = f"world_{nombre_mundo}.zip"
 
-    mundo = buscar_mundo(nombre)
+    mundo = buscar_mundo(nombre_mundo)
     if mundo is None:
-        raise RuntimeError(f"No se encontró el mundo '{nombre}' en worlds_local")
+        raise RuntimeError(f"No se encontró el mundo '{nombre_mundo}' en worlds_local")
 
     if os.path.exists(destino_zip):
         os.remove(destino_zip)
@@ -73,14 +109,10 @@ def crear_zip(destino_zip: str = "world.zip") -> str:
                 ruta_relativa = os.path.relpath(ruta_completa, mundo.ruta)
                 zf.write(ruta_completa, arcname=ruta_relativa)
 
-    print(f"[crear_zip] '{nombre}' comprimido → '{destino_zip}' "
+    print(f"[crear_zip] '{nombre_mundo}' comprimido → '{destino_zip}' "
           f"({os.path.getsize(destino_zip)} bytes)")
     return destino_zip
 
-
-# ==========================================================================
-# Manifest
-# ==========================================================================
 
 def crear_manifest(
     ruta_zip: str,
@@ -109,10 +141,6 @@ def crear_manifest(
     return ruta_manifest
 
 
-# ==========================================================================
-# Subida a R2
-# ==========================================================================
-
 def subir_zip(ruta_local: str, ruta_bucket: str) -> None:
     if not os.path.isfile(ruta_local):
         raise FileNotFoundError(f"No existe el ZIP: {ruta_local}")
@@ -125,7 +153,6 @@ def subir_zip(ruta_local: str, ruta_bucket: str) -> None:
         s3.upload_fileobj(f, bucket, ruta_bucket)
 
     print(f"[subir_zip] OK")
-
 
 
 def subir_manifest(ruta_local: str, ruta_bucket: str) -> None:
@@ -149,25 +176,70 @@ def subir_manifest(ruta_local: str, ruta_bucket: str) -> None:
     )
 
     print(f"[subir_manifest] OK")
+    
+
+# ==========================================================================
+# Funciones para el PULL
+# ==========================================================================
+def descargar_zip(ruta_bucket: str, destino: str) -> str:
+    """
+    Descarga un ZIP desde R2 a la ruta local destino.
+    """
+    
+    print(f"[descargar_zip] Bajando s3://{bucket}/{ruta_bucket} → '{destino}'")
+    
+    with open(destino, "wb") as f:
+        s3.download_fileobj(bucket, ruta_bucket, f) # 'download_fileobj' maneja archivos grandes y multipart automáticamente
+        
+    print(f"[descargar_zip] OK ({os.path.getsize(destino)} bytes)")
+    return destino
+
+
+def verificar_zip(ruta_local: str, manifest: dict) -> bool:
+    """
+    Compara el SHA-256 del archivo local con el que dice el manifest.
+    """
+    hash_local = calcular_sha256(ruta_local)
+    hash_esperado = manifest["sha256"]
+    
+    if hash_local == hash_esperado:
+        print(f"[verificar] OK — sha256 coincide")
+        return True
+    
+    print(f"[verificar] ERROR — sha256 NO coincide")
+    print(f"            esperado: {hash_esperado}")
+    print(f"            obtenido: {hash_local}")
+    return False
+
+
+def descomprimir_zip(ruta_zip: str, carpeta_destino: str) -> None:
+    """
+    Descomprime un ZIP en la carpeta destino. \n
+    Crea la carpeta destino si no existe.
+    """
+    os.makedirs(carpeta_destino, exist_ok=True)
+    with zipfile.ZipFile(ruta_zip, "r") as zf:
+        zf.extractall(carpeta_destino)
+    print(f"[descomprimir] '{ruta_zip}' → '{carpeta_destino}'")
 
 
 # ==========================================================================
 # Main
 # ==========================================================================
 
-if __name__ == "__main__":
-    if not world_name:
-        raise RuntimeError("Falta VALHEIM_WORLD_NAME en el archivo .env")
+# if __name__ == "__main__":
+#     if not world_name:
+#         raise RuntimeError("Falta VALHEIM_WORLD_NAME en el archivo .env")
 
-    imprimir_mundos()
+#     imprimir_mundos()
 
-    zip_path = crear_zip()
-    manifest_path = crear_manifest(
-        ruta_zip=zip_path,
-        ruta_manifest="manifest.json",
-        nombre_mundo=world_name,
-        version=1,
-    )
+#     # zip_path = crear_zip(world_name)
+#     # manifest_path = crear_manifest(
+#     #     ruta_zip=zip_path,
+#     #     ruta_manifest="manifest.json",
+#     #     nombre_mundo=world_name,
+#     #     version=1,
+#     # )
 
-    subir_zip(zip_path, key_current_zip(world_name))
-    subir_manifest(manifest_path, key_manifest(world_name))
+#     # subir_zip(zip_path, key_current_zip(world_name))
+#     # subir_manifest(manifest_path, key_manifest(world_name))
