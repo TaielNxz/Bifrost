@@ -18,10 +18,10 @@ pyproject.toml metadata, dependencias y entrypoints
 
 Módulos del paquete:
 
-- `cli.py`: interacción y coordinación de estado, push, pull y locks.
+- `cli.py`: interacción y coordinación de estado, push, descargas y locks.
 - `config.py`: carga y validación de `.env`.
 - `models.py`: `World`, `Manifest` y `WorldLock`.
-- `local_worlds.py`: detección, backup e instalación local.
+- `local_worlds.py`: detección, backup, instalación local y copias independientes.
 - `local_state.py`: versión y SHA-256 base de cada mundo local.
 - `storage.py`: operaciones S3/R2.
 - `manifests.py`: metadata, fechas y versiones.
@@ -53,6 +53,8 @@ worlds/<nombre>/backups/<fecha>.zip  # reservada; flujo no implementado
 El manifest contiene `version`, `world`, `filename`, `size`, `sha256`, `uploaded_by` y `uploaded_at` UTC. Push asigna `1` o `version + 1`, sube primero el ZIP y publica el manifest al final. Después libera solamente un lock propio.
 
 `.bifrost-state.json` vive directamente en `VALHEIM_WORLDS_PATH` y registra versión/hash base tras cada pull o push exitoso. Si existe un manifest remoto, el push exige una base local coincidente y se bloquea ante ausencia o discrepancia. El archivo no pertenece a ningún mundo ni se incluye en ZIP/R2.
+
+La descarga para hostear reemplaza el mundo local, registra la base y adquiere el lock. La descarga de copia guarda un ZIP verificado en `.bifrost-copies`, carpeta excluida de la detección de mundos; no reemplaza el mundo, no registra una base y no toca locks.
 
 La opción de estado es de solo lectura: muestra por mundo la versión, fecha, autor y tamaño del manifest, además del lock activo o el estado libre.
 

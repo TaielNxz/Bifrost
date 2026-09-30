@@ -4,6 +4,8 @@ Bifröst sincroniza mundos de Valheim entre jugadores mediante Cloudflare R2. Pe
 
 Cada descarga registra la versión base local. Si otra persona publica una versión nueva antes de tu push, Bifröst bloquea la subida desactualizada para evitar que se pierda progreso.
 
+La descarga para hostear reemplaza el mundo local de forma recuperable y adquiere su lock. La descarga de copia guarda un ZIP verificado en `.bifrost-copies` sin reemplazar mundos, adquirir locks ni modificar la versión base local.
+
 ## Desarrollo
 
 Requiere Python 3.11 o posterior.

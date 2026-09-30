@@ -8,9 +8,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from bifrost.archives import create_zip
-from bifrost.cli import pull_menu, push_menu
+from bifrost.cli import copy_menu, pull_menu, push_menu
 from bifrost.config import Settings
 from bifrost.local_state import read_base_version, save_base_version
+from bifrost.local_worlds import COPIES_DIRECTORY_NAME
 
 
 class FakeStorage:
@@ -238,6 +239,85 @@ class SyncFlowTests(unittest.TestCase):
                 read_base_version(worlds_root, "Asgard"),
                 {"version": 12, "sha256": sha256},
             )
+
+    def test_copy_downloads_verified_zip_without_lock_or_local_replacement(self) -> None:
+        class CopyStorage:
+            def __init__(self, archive: Path, manifest) -> None:
+                self.archive = archive
+                self.manifest = manifest
+
+            def list_worlds(self):
+                return ["Asgard"]
+
+            def read_manifest(self, world_name):
+                return self.manifest
+
+            def download_file(self, key, destination):
+                return Path(shutil.copyfile(self.archive, destination))
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            worlds_root = root / "worlds"
+            worlds_root.mkdir()
+            active_world = worlds_root / "Asgard"
+            active_world.mkdir()
+            (active_world / "save.db2").write_bytes(b"local progress")
+            source = root / "remote-source"
+            source.mkdir()
+            (source / "save.db2").write_bytes(b"remote progress")
+            archive = create_zip(source, root / "world.zip")
+            sha256 = hashlib.sha256(archive.read_bytes()).hexdigest()
+            manifest = {
+                "version": 12,
+                "world": "Asgard",
+                "filename": "worlds/Asgard/current/world.zip",
+                "size": archive.stat().st_size,
+                "sha256": sha256,
+                "uploaded_by": "Lucas",
+                "uploaded_at": "2026-09-30T22:15:00Z",
+            }
+            settings = Settings("url", "id", "secret", "bucket", worlds_root, "Taiel")
+            output = io.StringIO()
+
+            with redirect_stdout(output), patch("builtins.input", side_effect=["1", "s"]):
+                copy_menu(settings, CopyStorage(archive, manifest))  # type: ignore[arg-type]
+
+            copies = list((worlds_root / COPIES_DIRECTORY_NAME).glob("*.zip"))
+            self.assertEqual(len(copies), 1)
+            self.assertEqual(copies[0].read_bytes(), archive.read_bytes())
+            self.assertEqual((active_world / "save.db2").read_bytes(), b"local progress")
+            self.assertIsNone(read_base_version(worlds_root, "Asgard"))
+            self.assertIn("No se adquirió ningún lock", output.getvalue())
+
+    def test_copy_rejects_corrupted_download(self) -> None:
+        class CorruptedStorage:
+            def list_worlds(self):
+                return ["Asgard"]
+
+            def read_manifest(self, world_name):
+                return {
+                    "version": 4,
+                    "size": 100,
+                    "sha256": "a" * 64,
+                    "uploaded_at": "2026-09-30T22:15:00Z",
+                    "uploaded_by": "Lucas",
+                }
+
+            def download_file(self, key, destination):
+                path = Path(destination)
+                path.write_bytes(b"corrupted")
+                return path
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            output = io.StringIO()
+            settings = Settings("url", "id", "secret", "bucket", root, "Taiel")
+
+            with redirect_stdout(output), patch("builtins.input", side_effect=["1", "s"]):
+                copy_menu(settings, CorruptedStorage())  # type: ignore[arg-type]
+
+            self.assertFalse((root / COPIES_DIRECTORY_NAME).exists())
+            self.assertIn("no coincide con el manifest", output.getvalue())
 
 
 if __name__ == "__main__":

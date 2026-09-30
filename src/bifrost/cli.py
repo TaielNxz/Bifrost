@@ -7,7 +7,7 @@ from typing import Callable, Sequence, TypeVar
 from .archives import create_zip, extract_zip, verify_zip
 from .config import Settings, load_settings
 from .local_state import read_base_version, save_base_version
-from .local_worlds import find_world, install_staged_world, list_worlds
+from .local_worlds import find_world, install_staged_world, list_worlds, save_world_copy
 from .locks import acquire_lock, active_lock, release_lock
 from .manifests import build_manifest, next_version, parse_iso_datetime
 from .models import LocalBase, Manifest, World
@@ -268,8 +268,8 @@ def _allow_lock_override(storage: R2Storage, world_name: str, player: str) -> bo
 
 
 def pull_menu(settings: Settings, storage: R2Storage) -> None:
-    """Descarga un mundo de la nube y reemplaza la versión local si existe."""
-    print("\n=== Descargar un mundo ===\n")
+    """Descarga un mundo para hostear, reemplaza la copia local y toma el lock."""
+    print("\n=== Descargar para hostear ===\n")
     remote_worlds = []
     for name in storage.list_worlds():
         manifest = storage.read_manifest(name)
@@ -322,6 +322,58 @@ def pull_menu(settings: Settings, storage: R2Storage) -> None:
         print(f"[INFO] Tu versión anterior está en '{backup}'.")
 
 
+def copy_menu(settings: Settings, storage: R2Storage) -> None:
+    """Descarga un ZIP verificado sin reemplazar el mundo ni adquirir su lock."""
+    print("\n=== Descargar una copia ===\n")
+    
+    # Obtiene nombres de mundos remotos
+    remote_worlds = []
+    for name in storage.list_worlds():
+        manifest = storage.read_manifest(name)
+        if manifest is not None:
+            remote_worlds.append((name, manifest))
+    if not remote_worlds:
+        print("No hay mundos legibles en la nube todavía.")
+        return
+
+    # Muestra un menú para elegir un mundo remoto
+    selected = choose(
+        remote_worlds,
+        lambda item: (
+            f"{item[0]:<15} (versión {item[1]['version']}, "
+            f"{_format_size(item[1]['size'])}, "
+            f"fecha {parse_iso_datetime(item[1]['uploaded_at']):%Y-%m-%d %H:%M} UTC, "
+            f"subido por {item[1]['uploaded_by']})"
+        ),
+    )
+    if selected is None:
+        return
+
+    # Descarga el ZIP del mundo elegido y lo guarda en la carpeta de mundos locales
+    print("\n[INFO] Esta descarga no reemplaza tu mundo local ni adquiere el lock.")
+    world_name, manifest = selected
+    if not confirm(f"¿Guardar una copia de '{world_name}'?"):
+        print("\nOperación cancelada.")
+        return
+    with tempfile.TemporaryDirectory(prefix="bifrost-copy-") as temporary_dir:
+        zip_path = storage.download_file(
+            current_zip_key(world_name), Path(temporary_dir) / "world.zip"
+        )
+        if not verify_zip(zip_path, manifest["sha256"]):
+            print("\n[ERROR] El ZIP descargado no coincide con el manifest.")
+            return
+        destination = save_world_copy(
+            settings.worlds_path,
+            world_name,
+            manifest["version"],
+            manifest["sha256"],
+            zip_path,
+        )
+
+    print(f"\n[OK] Copia verificada guardada en '{destination}'.")
+    print("[INFO] No se adquirió ningún lock ni se modificó la versión base local.")
+
+
 def lock_menu(settings: Settings, storage: R2Storage) -> None:
     """Muestra el estado de los locks y permite liberar uno propio."""
     print("\n=== Estado del lock ===\n")
@@ -361,9 +413,10 @@ def run_menu(settings: Settings, storage: R2Storage) -> None:
         print("\n=== Bifröst ===")
         print("  1) Estado de los mundos")
         print("  2) Subir un mundo")
-        print("  3) Descargar un mundo")
-        print("  4) Ver/liberar lock")
-        print("  5) Salir")
+        print("  3) Descargar para hostear")
+        print("  4) Descargar una copia")
+        print("  5) Ver/liberar lock")
+        print("  6) Salir")
         option = input("\nElegí una opción: ").strip()
         if option == "1":
             status_menu(storage)
@@ -372,8 +425,10 @@ def run_menu(settings: Settings, storage: R2Storage) -> None:
         elif option == "3":
             pull_menu(settings, storage)
         elif option == "4":
-            lock_menu(settings, storage)
+            copy_menu(settings, storage)
         elif option == "5":
+            lock_menu(settings, storage)
+        elif option == "6":
             print("\n¡Chau!")
             return
         else:

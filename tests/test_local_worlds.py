@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bifrost.local_worlds import install_staged_world, list_worlds
+from bifrost.local_worlds import COPIES_DIRECTORY_NAME, install_staged_world, list_worlds
 
 
 class LocalWorldTests(unittest.TestCase):
@@ -13,6 +13,7 @@ class LocalWorldTests(unittest.TestCase):
             (root / "Asgard" / "world.db2").write_bytes(b"abc")
             (root / "Asgard_backup_1").mkdir()
             (root / "Asgard_pre_pull_20260101-120000").mkdir()
+            (root / COPIES_DIRECTORY_NAME).mkdir()
             worlds = list_worlds(root)
             self.assertEqual([world.name for world in worlds], ["Asgard"])
             self.assertEqual(worlds[0].size_bytes, 3)
