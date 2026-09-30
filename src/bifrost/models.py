@@ -27,6 +27,11 @@ class Manifest(TypedDict):
     uploaded_at: str
 
 
+class LocalBase(TypedDict):
+    version: int
+    sha256: str
+
+
 class WorldLock(TypedDict):
     player: str
     machine: str

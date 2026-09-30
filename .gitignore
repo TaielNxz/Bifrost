@@ -4,6 +4,8 @@ __pycache__
 *.py[cod]
 *.zip
 manifest_*.json
+.bifrost-state.json
+.bifrost-state.json.*.tmp
 .pytest_cache/
 *.egg-info/
 build/

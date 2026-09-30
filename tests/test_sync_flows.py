@@ -1,21 +1,25 @@
+import hashlib
 import io
+import shutil
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+from bifrost.archives import create_zip
 from bifrost.cli import pull_menu, push_menu
 from bifrost.config import Settings
+from bifrost.local_state import read_base_version, save_base_version
 
 
 class FakeStorage:
-    def __init__(self) -> None:
+    def __init__(self, manifest=None) -> None:
         self.events: list[str] = []
-        self.manifest = None
+        self.manifest = manifest
 
     def read_manifest(self, world_name):
-        return None
+        return self.manifest
 
     def upload_file(self, local_path, key):
         self.events.append("zip")
@@ -42,8 +46,127 @@ class SyncFlowTests(unittest.TestCase):
                 push_menu(settings, storage)  # type: ignore[arg-type]
             self.assertEqual(storage.events, ["zip", "manifest"])
             self.assertEqual(storage.manifest["uploaded_by"], "Taiel")
+            self.assertEqual(read_base_version(root, "Asgard")["version"], 1)
             self.assertIn("Asgard          (4 bytes,", output.getvalue())
             self.assertRegex(output.getvalue(), r"Subiendo ZIP de \d+(?:\.\d)? (?:bytes|KB)\.\.\.")
+
+    def test_push_accepts_matching_base_and_updates_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            world = root / "Asgard"
+            world.mkdir()
+            (world / "save.db2").write_bytes(b"new progress")
+            remote_manifest = {
+                "version": 10,
+                "world": "Asgard",
+                "filename": "worlds/Asgard/current/world.zip",
+                "size": 100,
+                "sha256": "a" * 64,
+                "uploaded_by": "Lucas",
+                "uploaded_at": "2020-01-01T00:00:00Z",
+            }
+            save_base_version(root, "Asgard", 10, "a" * 64)
+            settings = Settings("url", "id", "secret", "bucket", root, "Taiel")
+            storage = FakeStorage(remote_manifest)
+
+            with patch("builtins.input", side_effect=["1", "s"]):
+                push_menu(settings, storage)  # type: ignore[arg-type]
+
+            self.assertEqual(storage.events, ["zip", "manifest"])
+            self.assertEqual(storage.manifest["version"], 11)
+            self.assertEqual(read_base_version(root, "Asgard")["version"], 11)
+
+    def test_push_blocks_outdated_base(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            world = root / "Asgard"
+            world.mkdir()
+            (world / "save.db2").write_bytes(b"divergent progress")
+            remote_manifest = {
+                "version": 11,
+                "world": "Asgard",
+                "filename": "worlds/Asgard/current/world.zip",
+                "size": 100,
+                "sha256": "b" * 64,
+                "uploaded_by": "Lucas",
+                "uploaded_at": "2026-09-30T22:15:00Z",
+            }
+            save_base_version(root, "Asgard", 10, "a" * 64)
+            settings = Settings("url", "id", "secret", "bucket", root, "Taiel")
+            storage = FakeStorage(remote_manifest)
+            output = io.StringIO()
+
+            with redirect_stdout(output), patch("builtins.input", side_effect=["1", "s"]):
+                push_menu(settings, storage)  # type: ignore[arg-type]
+
+            self.assertEqual(storage.events, [])
+            self.assertIn("Base local: versión 10", output.getvalue())
+            self.assertIn("Remoto:     versión 11", output.getvalue())
+            self.assertIn("subida fue bloqueada", output.getvalue())
+
+    def test_push_blocks_remote_world_without_local_base(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            world = root / "Asgard"
+            world.mkdir()
+            (world / "save.db2").write_bytes(b"unknown base")
+            remote_manifest = {
+                "version": 3,
+                "world": "Asgard",
+                "filename": "worlds/Asgard/current/world.zip",
+                "size": 100,
+                "sha256": "c" * 64,
+                "uploaded_by": "Lucas",
+                "uploaded_at": "2026-09-30T22:15:00Z",
+            }
+            settings = Settings("url", "id", "secret", "bucket", root, "Taiel")
+            storage = FakeStorage(remote_manifest)
+            output = io.StringIO()
+
+            with redirect_stdout(output), patch("builtins.input", side_effect=["1", "s"]):
+                push_menu(settings, storage)  # type: ignore[arg-type]
+
+            self.assertEqual(storage.events, [])
+            self.assertIn("No hay una versión base registrada", output.getvalue())
+
+    def test_push_blocks_same_version_with_different_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            world = root / "Asgard"
+            world.mkdir()
+            (world / "save.db2").write_bytes(b"local progress")
+            remote_manifest = {
+                "version": 10,
+                "world": "Asgard",
+                "filename": "worlds/Asgard/current/world.zip",
+                "size": 100,
+                "sha256": "b" * 64,
+                "uploaded_by": "Lucas",
+                "uploaded_at": "2026-09-30T22:15:00Z",
+            }
+            save_base_version(root, "Asgard", 10, "a" * 64)
+            settings = Settings("url", "id", "secret", "bucket", root, "Taiel")
+            storage = FakeStorage(remote_manifest)
+
+            with patch("builtins.input", side_effect=["1", "s"]):
+                push_menu(settings, storage)  # type: ignore[arg-type]
+
+            self.assertEqual(storage.events, [])
+
+    def test_push_blocks_missing_remote_manifest_when_local_base_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            world = root / "Asgard"
+            world.mkdir()
+            (world / "save.db2").write_bytes(b"local progress")
+            save_base_version(root, "Asgard", 10, "a" * 64)
+            settings = Settings("url", "id", "secret", "bucket", root, "Taiel")
+            storage = FakeStorage()
+
+            with patch("builtins.input", side_effect=["1", "s"]):
+                push_menu(settings, storage)  # type: ignore[arg-type]
+
+            self.assertEqual(storage.events, [])
 
     def test_pull_list_displays_manifest_size_in_readable_format(self) -> None:
         class PullStorage:
@@ -64,6 +187,57 @@ class SyncFlowTests(unittest.TestCase):
             pull_menu(settings, PullStorage())  # type: ignore[arg-type]
 
         self.assertIn("versión 12, 84.6 MB,", output.getvalue())
+
+    def test_pull_records_downloaded_version_as_local_base(self) -> None:
+        class PullStorage:
+            def __init__(self, archive: Path, manifest) -> None:
+                self.archive = archive
+                self.manifest = manifest
+                self.lock = None
+
+            def list_worlds(self):
+                return ["Asgard"]
+
+            def read_manifest(self, world_name):
+                return self.manifest
+
+            def read_lock(self, world_name):
+                return self.lock
+
+            def write_lock(self, world_name, world_lock):
+                self.lock = world_lock
+
+            def download_file(self, key, destination):
+                return Path(shutil.copyfile(self.archive, destination))
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            worlds_root = root / "worlds"
+            worlds_root.mkdir()
+            source = root / "remote-source"
+            source.mkdir()
+            (source / "save.db2").write_bytes(b"remote progress")
+            archive = create_zip(source, root / "world.zip")
+            sha256 = hashlib.sha256(archive.read_bytes()).hexdigest()
+            manifest = {
+                "version": 12,
+                "world": "Asgard",
+                "filename": "worlds/Asgard/current/world.zip",
+                "size": archive.stat().st_size,
+                "sha256": sha256,
+                "uploaded_by": "Lucas",
+                "uploaded_at": "2026-09-30T22:15:00Z",
+            }
+            settings = Settings("url", "id", "secret", "bucket", worlds_root, "Taiel")
+
+            with patch("builtins.input", side_effect=["1", "s"]):
+                pull_menu(settings, PullStorage(archive, manifest))  # type: ignore[arg-type]
+
+            self.assertEqual((worlds_root / "Asgard" / "save.db2").read_bytes(), b"remote progress")
+            self.assertEqual(
+                read_base_version(worlds_root, "Asgard"),
+                {"version": 12, "sha256": sha256},
+            )
 
 
 if __name__ == "__main__":

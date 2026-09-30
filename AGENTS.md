@@ -22,6 +22,7 @@ Módulos del paquete:
 - `config.py`: carga y validación de `.env`.
 - `models.py`: `World`, `Manifest` y `WorldLock`.
 - `local_worlds.py`: detección, backup e instalación local.
+- `local_state.py`: versión y SHA-256 base de cada mundo local.
 - `storage.py`: operaciones S3/R2.
 - `manifests.py`: metadata, fechas y versiones.
 - `locks.py`: creación, vencimiento y persistencia de locks.
@@ -51,6 +52,8 @@ worlds/<nombre>/backups/<fecha>.zip  # reservada; flujo no implementado
 
 El manifest contiene `version`, `world`, `filename`, `size`, `sha256`, `uploaded_by` y `uploaded_at` UTC. Push asigna `1` o `version + 1`, sube primero el ZIP y publica el manifest al final. Después libera solamente un lock propio.
 
+`.bifrost-state.json` vive directamente en `VALHEIM_WORLDS_PATH` y registra versión/hash base tras cada pull o push exitoso. Si existe un manifest remoto, el push exige una base local coincidente y se bloquea ante ausencia o discrepancia. El archivo no pertenece a ningún mundo ni se incluye en ZIP/R2.
+
 La opción de estado es de solo lectura: muestra por mundo la versión, fecha, autor y tamaño del manifest, además del lock activo o el estado libre.
 
 Pull compara frescura, exige confirmación para forzar un lock ajeno y adquiere un lock de 12 horas. Descarga a un temporal, verifica SHA-256 y extrae en staging con validación de rutas. Solo entonces mueve el mundo anterior a `<nombre>_pre_pull_<timestamp>` e instala el nuevo; ante un fallo del movimiento final intenta restaurar el original. El lock permanece activo hasta el push.
@@ -58,6 +61,7 @@ Pull compara frescura, exige confirmación para forzar un lock ajeno y adquiere 
 ## Invariantes
 
 - Nunca publiques el manifest antes de completar el ZIP correspondiente.
+- Nunca publiques sobre un manifest que no coincida con la versión y hash base locales.
 - Nunca aceptes un ZIP cuyo SHA-256 no coincida.
 - No sobrescribas progreso más nuevo ni un lock ajeno sin confirmación explícita.
 - Todo reemplazo local debe ser recuperable y prepararse fuera de la carpeta activa.
@@ -69,7 +73,7 @@ Pull compara frescura, exige confirmación para forzar un lock ajeno y adquiere 
 ## Limitaciones conocidas
 
 - Push no comprueba ni adquiere el lock antes de sobrescribir el remoto.
-- La frescura usa el `mtime` de la carpeta raíz, que puede no representar el archivo más reciente.
+- La advertencia secundaria de frescura usa el `mtime` de la carpeta raíz, que puede no representar el archivo más reciente; el control autoritativo de conflictos usa versión y hash base.
 - Los backups remotos todavía no se crean ni restauran.
 - La subida no verifica posteriormente el objeto remoto.
 - `version + 1` no es atómico; pushes concurrentes pueden colisionar.

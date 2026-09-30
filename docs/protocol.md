@@ -14,3 +14,9 @@ La clave de backups está reservada; el flujo actual todavía no publica backups
 En un push se sube primero `current/world.zip` y luego `manifest.json`. El manifest es el puntero oficial a la versión vigente y contiene versión, mundo, clave del ZIP, tamaño, SHA-256, autor y fecha UTC.
 
 Un lock contiene jugador, máquina, fecha de adquisición y vencimiento. Su duración actual es de 12 horas.
+
+## Versión base local
+
+Cada pull y push exitoso registra en `.bifrost-state.json` la versión y el SHA-256 que pasan a ser la base del mundo local. Antes de publicar, ambos valores deben coincidir con el manifest remoto vigente. Una discrepancia o la ausencia del registro cuando ya existe un manifest bloquea la subida; este control evita que una copia derivada de una versión anterior reemplace progreso más reciente.
+
+El archivo de estado es local, vive directamente en `VALHEIM_WORLDS_PATH` y no se publica en R2 ni se incluye en los ZIP.

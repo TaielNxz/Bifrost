@@ -6,10 +6,11 @@ from typing import Callable, Sequence, TypeVar
 
 from .archives import create_zip, extract_zip, verify_zip
 from .config import Settings, load_settings
+from .local_state import read_base_version, save_base_version
 from .local_worlds import find_world, install_staged_world, list_worlds
 from .locks import acquire_lock, active_lock, release_lock
 from .manifests import build_manifest, next_version, parse_iso_datetime
-from .models import Manifest, World
+from .models import LocalBase, Manifest, World
 from .paths import current_zip_key
 from .storage import R2Storage
 
@@ -53,16 +54,75 @@ def show_comparison(world: World, manifest: Manifest) -> tuple[datetime, datetim
     return remote_date, local_date
 
 
-def allow_push(world: World, remote_manifest: Manifest | None) -> bool:
-    """Devuelve True si se permite subir el mundo, o False si se cancela."""
+def allow_push(
+    world: World, remote_manifest: Manifest | None, local_base: LocalBase | None
+) -> bool:
+    """Permite subir solo si la versión base local coincide con la remota."""
+    
+    # Caso 1: No hay manifest remoto. 
+    #         Esto indica que el mundo remoto fue borrado o nunca existió.
     if remote_manifest is None:
+        
+        # Caso 1.1: No hay manifest remoto, pero sí base local. 
+        #         Esto indica que la versión remota fue borrada.
+        if local_base is not None:
+            print(
+                f"\n[CONFLICTO] '{world.name}' parte de la versión "
+                f"{local_base['version']}, pero el manifest remoto no está disponible."
+            )
+            print("    La subida fue bloqueada para evitar reiniciar el historial remoto.")
+            return False
+        
+        # Caso 1.2: No hay manifest remoto, ni base local. 
+        #         Esto indica que es la primera subida del mundo.
         print(f"\n[INFO] No hay versión previa de '{world.name}' en la nube.")
         return True
+
+    # Caso 2: Hay manifest remoto, pero no hay base local. 
+    #         Esto indica que el mundo local no parte de la versión remota.
+    if local_base is None:
+        print(f"\n[CONFLICTO] No hay una versión base registrada para '{world.name}'.")
+        print(
+            f"    La nube contiene la versión {remote_manifest['version']} "
+            f"subida por {remote_manifest['uploaded_by']}."
+        )
+        print("    Descargá la versión vigente antes de iniciar una nueva sesión.")
+        print("    La subida fue bloqueada para evitar sobrescribir progreso.")
+        return False
+
+    # Caso 3: Hay manifest remoto y base local.
+    
+    # Caso 3.1: La versión y el hash de la base local NO coinciden con la remota. 
+    #           Esto indica que el mundo local NO parte de la versión remota.
+    remote_version = remote_manifest["version"]
+    remote_sha256 = remote_manifest["sha256"].lower()
+    if local_base["version"] != remote_version or local_base["sha256"] != remote_sha256:
+        print(f"\n[CONFLICTO] '{world.name}' no parte de la versión remota vigente.")
+        print(
+            f"    Base local: versión {local_base['version']}, "
+            f"SHA-256 {local_base['sha256'][:12]}..."
+        )
+        print(
+            f"    Remoto:     versión {remote_version}, "
+            f"SHA-256 {remote_sha256[:12]}..., "
+            f"subido por {remote_manifest['uploaded_by']}"
+        )
+        print("    La subida fue bloqueada para preservar ambas versiones.")
+        return False
+
+    # Caso 3.2: La versión y el hash de la base local si coinciden con la remota. 
+    #           Esto indica que el mundo local SI parte de la versión remota.
+
+    # Caso 3.2.1: La versión remota es más nueva que la local. 
+    #             Esto indica que el mundo remoto fue modificado por otro jugador.
     remote_date, local_date = show_comparison(world, remote_manifest)
     if remote_date > local_date:
         print("\n[!] La versión remota es MÁS NUEVA que tu versión local.")
         print("    Si subís ahora, VAS A SOBRESCRIBIR ese progreso.")
         return confirm("\n¿Continuar igual?")
+    
+    # Caso 3.2.2: La versión remota es igual o más nueva que la local. 
+    #             Esto indica que el mundo local no tiene cambios respecto a la versión remota.
     print("\n[OK] Tu versión local es igual o más nueva que la remota.")
     return True
 
@@ -167,7 +227,8 @@ def push_menu(settings: Settings, storage: R2Storage) -> None:
         return
 
     remote_manifest = storage.read_manifest(world.name)
-    if not allow_push(world, remote_manifest):
+    local_base = read_base_version(settings.worlds_path, world.name)
+    if not allow_push(world, remote_manifest, local_base):
         print("\nOperación cancelada.")
         return
 
@@ -178,6 +239,9 @@ def push_menu(settings: Settings, storage: R2Storage) -> None:
         print(f"[push] Subiendo ZIP de {_format_size(zip_path.stat().st_size)}...")
         storage.upload_file(zip_path, current_zip_key(world.name))
         storage.write_manifest(world.name, manifest)
+        save_base_version(
+            settings.worlds_path, world.name, manifest["version"], manifest["sha256"]
+        )
 
     world_lock = active_lock(storage, world.name)
     if world_lock and world_lock["player"] == settings.player_name:
@@ -249,6 +313,9 @@ def pull_menu(settings: Settings, storage: R2Storage) -> None:
             return
         staged_world = extract_zip(zip_path, temporary_root / "staged-world")
         backup = install_staged_world(settings.worlds_path, world_name, staged_world)
+        save_base_version(
+            settings.worlds_path, world_name, manifest["version"], manifest["sha256"]
+        )
 
     print(f"\n[OK] '{world_name}' descargado y verificado.")
     if backup:
