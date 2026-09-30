@@ -8,6 +8,8 @@ La descarga para hostear reemplaza el mundo local de forma recuperable y adquier
 
 Antes de subir, Bifröst comprueba el lock al comenzar y nuevamente antes de transferir. Un lock ajeno activo bloquea la publicación; un lock propio o la ausencia de lock permiten continuar.
 
+Cada push preserva la versión remota reemplazada en un historial de R2. Se conservan las cinco versiones anteriores más recientes para limitar el uso de almacenamiento.
+
 ## Desarrollo
 
 Requiere Python 3.11 o posterior.

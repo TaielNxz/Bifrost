@@ -10,6 +10,7 @@ El código instalable vive en `src/bifrost`. La terminal depende de los módulos
 - `archives.py`: ZIP, SHA-256 y extracción segura.
 - `storage.py`: operaciones de bajo nivel contra R2/S3.
 - `manifests.py`: metadata, fechas y versiones.
+- `versions.py`: snapshots remotos y política de retención del historial.
 - `locks.py`: creación, vencimiento y persistencia de locks.
 - `paths.py`: claves del protocolo remoto.
 

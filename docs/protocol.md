@@ -6,14 +6,18 @@ Cada mundo usa estas claves en R2:
 worlds/<nombre>/manifest.json
 worlds/<nombre>/lock.json
 worlds/<nombre>/current/world.zip
+worlds/<nombre>/versions/<versión>/world.zip
+worlds/<nombre>/versions/<versión>/manifest.json
 worlds/<nombre>/backups/<fecha>.zip
 ```
 
-La clave de backups está reservada; el flujo actual todavía no publica backups remotos.
+La clave de backups fechados está reservada. El historial automático utiliza `versions/` y conserva como máximo las cinco versiones anteriores.
 
 En un push se sube primero `current/world.zip` y luego `manifest.json`. El manifest es el puntero oficial a la versión vigente y contiene versión, mundo, clave del ZIP, tamaño, SHA-256, autor y fecha UTC.
 
-El push consulta el lock antes de preparar la publicación y otra vez inmediatamente antes de transferir. Un lock ajeno activo o inválido bloquea la operación. Un lock propio permite publicar y se libera después del éxito; la ausencia de lock también permite continuar.
+El push consulta el lock antes de preparar la publicación, antes de archivar y nuevamente antes de transferir. Un lock ajeno activo o inválido bloquea la operación. Un lock propio permite publicar y se libera después del éxito; la ausencia de lock también permite continuar.
+
+Antes de reemplazar `current/world.zip`, el push copia el ZIP vigente y publica una copia de su manifest bajo `versions/<versión>/`. Luego elimina los snapshots más antiguos que excedan el límite de cinco. El ZIP se archiva antes que su manifest y un snapshot existente con el mismo número pero distinto hash bloquea la operación.
 
 Un lock contiene jugador, máquina, fecha de adquisición y vencimiento. Su duración actual es de 12 horas.
 

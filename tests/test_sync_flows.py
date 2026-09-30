@@ -18,6 +18,7 @@ class FakeStorage:
     def __init__(self, manifest=None) -> None:
         self.events: list[str] = []
         self.manifest = manifest
+        self.objects: dict[str, object] = {}
 
     def read_manifest(self, world_name):
         return self.manifest
@@ -31,6 +32,23 @@ class FakeStorage:
 
     def read_lock(self, world_name):
         return None
+
+    def get_json(self, key):
+        return self.objects.get(key)
+
+    def put_json(self, key, value):
+        self.events.append("history_manifest")
+        self.objects[key] = value
+
+    def copy(self, source_key, destination_key):
+        self.events.append("history_zip")
+        self.objects[destination_key] = self.objects.get(source_key, b"current zip")
+
+    def list_keys(self, prefix):
+        return [key for key in self.objects if key.startswith(prefix)]
+
+    def delete(self, key):
+        self.objects.pop(key, None)
 
 
 class LockStorage(FakeStorage):
@@ -86,9 +104,17 @@ class SyncFlowTests(unittest.TestCase):
             with patch("builtins.input", side_effect=["1", "s"]):
                 push_menu(settings, storage)  # type: ignore[arg-type]
 
-            self.assertEqual(storage.events, ["zip", "manifest"])
+            self.assertEqual(
+                storage.events,
+                ["history_zip", "history_manifest", "zip", "manifest"],
+            )
             self.assertEqual(storage.manifest["version"], 11)
             self.assertEqual(read_base_version(root, "Asgard")["version"], 11)
+            archived_manifest = storage.objects["worlds/Asgard/versions/10/manifest.json"]
+            self.assertEqual(archived_manifest["version"], 10)
+            self.assertEqual(
+                archived_manifest["filename"], "worlds/Asgard/versions/10/world.zip"
+            )
 
     def test_push_blocks_outdated_base(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -243,7 +269,10 @@ class SyncFlowTests(unittest.TestCase):
             with patch("builtins.input", side_effect=["1", "s"]):
                 push_menu(settings, storage)  # type: ignore[arg-type]
 
-            self.assertEqual(storage.events, ["zip", "manifest", "unlock"])
+            self.assertEqual(
+                storage.events,
+                ["history_zip", "history_manifest", "zip", "manifest", "unlock"],
+            )
             self.assertIsNone(storage.world_lock)
 
     def test_push_rechecks_lock_before_upload(self) -> None:
@@ -284,8 +313,40 @@ class SyncFlowTests(unittest.TestCase):
             with patch("builtins.input", side_effect=["1", "s"]):
                 push_menu(settings, storage)  # type: ignore[arg-type]
 
-            self.assertEqual(storage.events, [])
+            self.assertNotIn("zip", storage.events)
+            self.assertNotIn("manifest", storage.events)
             self.assertEqual(storage.lock_reads, 2)
+
+    def test_push_keeps_only_five_previous_remote_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            world = root / "Asgard"
+            world.mkdir()
+            (world / "save.db2").write_bytes(b"local progress")
+            remote_manifest = {
+                "version": 6,
+                "world": "Asgard",
+                "filename": "worlds/Asgard/current/world.zip",
+                "size": 100,
+                "sha256": "f" * 64,
+                "uploaded_by": "Taiel",
+                "uploaded_at": "2020-01-01T00:00:00Z",
+            }
+            save_base_version(root, "Asgard", 6, "f" * 64)
+            settings = Settings("url", "id", "secret", "bucket", root, "Taiel")
+            storage = FakeStorage(remote_manifest)
+            for version in range(1, 6):
+                prefix = f"worlds/Asgard/versions/{version}"
+                storage.objects[f"{prefix}/world.zip"] = b"old"
+                storage.objects[f"{prefix}/manifest.json"] = {"version": version}
+
+            with patch("builtins.input", side_effect=["1", "s"]):
+                push_menu(settings, storage)  # type: ignore[arg-type]
+
+            history_keys = storage.list_keys("worlds/Asgard/versions/")
+            history_versions = {int(key.split("/")[3]) for key in history_keys}
+            self.assertEqual(history_versions, {2, 3, 4, 5, 6})
+            self.assertEqual(storage.manifest["version"], 7)
 
     def test_pull_list_displays_manifest_size_in_readable_format(self) -> None:
         class PullStorage:

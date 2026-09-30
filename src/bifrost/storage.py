@@ -54,6 +54,20 @@ class R2Storage:
         """Elimina de R2 el objeto correspondiente a una clave."""
         self.client.delete_object(Bucket=self.bucket, Key=key)
 
+    def copy(self, source_key: str, destination_key: str) -> None:
+        """Copia un objeto dentro del mismo bucket sin descargarlo."""
+        self.client.copy_object(
+            Bucket=self.bucket,
+            CopySource={"Bucket": self.bucket, "Key": source_key},
+            Key=destination_key,
+        )
+
+    def list_keys(self, prefix: str) -> list[str]:
+        """Lista todas las claves existentes bajo un prefijo, incluida la paginación."""
+        paginator = self.client.get_paginator("list_objects_v2")
+        pages = paginator.paginate(Bucket=self.bucket, Prefix=prefix)
+        return [item["Key"] for page in pages for item in page.get("Contents", [])]
+
     def upload_file(self, local_path: str | os.PathLike[str], key: str) -> None:
         """Sube un archivo local a la clave remota indicada."""
         with Path(local_path).open("rb") as file:

@@ -25,6 +25,7 @@ Módulos del paquete:
 - `local_state.py`: versión y SHA-256 base de cada mundo local.
 - `storage.py`: operaciones S3/R2.
 - `manifests.py`: metadata, fechas y versiones.
+- `versions.py`: snapshots remotos y retención de versiones anteriores.
 - `locks.py`: creación, vencimiento y persistencia de locks.
 - `archives.py`: ZIP, SHA-256 y extracción segura.
 - `paths.py`: claves del protocolo remoto.
@@ -47,10 +48,14 @@ Claves de R2:
 worlds/<nombre>/manifest.json
 worlds/<nombre>/lock.json
 worlds/<nombre>/current/world.zip
+worlds/<nombre>/versions/<versión>/world.zip
+worlds/<nombre>/versions/<versión>/manifest.json
 worlds/<nombre>/backups/<fecha>.zip  # reservada; flujo no implementado
 ```
 
-El manifest contiene `version`, `world`, `filename`, `size`, `sha256`, `uploaded_by` y `uploaded_at` UTC. Push asigna `1` o `version + 1`, valida el lock antes de preparar y antes de transferir, sube primero el ZIP y publica el manifest al final. Un lock ajeno o inválido bloquea la publicación; después de un push exitoso se libera solamente un lock propio.
+El manifest contiene `version`, `world`, `filename`, `size`, `sha256`, `uploaded_by` y `uploaded_at` UTC. Push asigna `1` o `version + 1`, valida lock y manifest durante la preparación, archiva la versión vigente, sube primero el ZIP nuevo y publica su manifest al final. Un lock ajeno o inválido bloquea la publicación; después de un push exitoso se libera solamente un lock propio.
+
+El historial remoto conserva como máximo cinco versiones anteriores bajo `versions/<versión>/`, cada una con ZIP y manifest. El archivado ocurre antes de reemplazar `current/`; un snapshot con el mismo número y otro hash es un conflicto y nunca se sobrescribe.
 
 `.bifrost-state.json` vive directamente en `VALHEIM_WORLDS_PATH` y registra versión/hash base tras cada pull o push exitoso. Si existe un manifest remoto, el push exige una base local coincidente y se bloquea ante ausencia o discrepancia. El archivo no pertenece a ningún mundo ni se incluye en ZIP/R2.
 
@@ -77,7 +82,7 @@ Pull compara frescura, exige confirmación para forzar un lock ajeno y adquiere 
 
 - La validación del lock durante push reduce carreras, pero no es atómica con la escritura remota; el lock todavía puede cambiar entre la última comprobación y la publicación.
 - La advertencia secundaria de frescura usa el `mtime` de la carpeta raíz, que puede no representar el archivo más reciente; el control autoritativo de conflictos usa versión y hash base.
-- Los backups remotos todavía no se crean ni restauran.
+- Se crean snapshots históricos remotos, pero todavía no existe un flujo de restauración; el helper de backups fechados sigue reservado.
 - La subida no verifica posteriormente el objeto remoto.
 - `version + 1` no es atómico; pushes concurrentes pueden colisionar.
 - Falta validar/sanitizar nombres de mundo y esquemas JSON remotos.

@@ -16,6 +16,26 @@ def current_zip_key(world_name: str) -> str:
     return f"{WORLDS_PREFIX}/{world_name}/current/world.zip"
 
 
+def versions_prefix(world_name: str) -> str:
+    """Construye el prefijo remoto del historial de versiones de un mundo."""
+    return f"{WORLDS_PREFIX}/{world_name}/versions"
+
+
+def version_prefix(world_name: str, version: int) -> str:
+    """Construye el prefijo remoto de una versión histórica."""
+    return f"{versions_prefix(world_name)}/{version}"
+
+
+def version_zip_key(world_name: str, version: int) -> str:
+    """Construye la clave del ZIP de una versión histórica."""
+    return f"{version_prefix(world_name, version)}/world.zip"
+
+
+def version_manifest_key(world_name: str, version: int) -> str:
+    """Construye la clave del manifest de una versión histórica."""
+    return f"{version_prefix(world_name, version)}/manifest.json"
+
+
 def backup_key(world_name: str, date: str) -> str:
     """Construye la clave remota de un backup fechado de un mundo."""
     return f"{WORLDS_PREFIX}/{world_name}/backups/{date}.zip"

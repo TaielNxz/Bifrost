@@ -13,6 +13,7 @@ from .manifests import build_manifest, next_version, parse_iso_datetime
 from .models import LocalBase, Manifest, World
 from .paths import current_zip_key
 from .storage import R2Storage
+from .versions import archive_current_version, prune_remote_versions
 
 T = TypeVar("T")
 
@@ -211,10 +212,14 @@ def status_menu(storage: R2Storage) -> None:
 def push_menu(settings: Settings, storage: R2Storage) -> None:
     """Sube un mundo local a la nube, reemplazando la versión remota si existe."""
     print("\n=== Subir un mundo ===\n")
+    
+    # Obtiene la lista de mundos locales
     worlds = list_worlds(settings.worlds_path)
     if not worlds:
         print("No hay mundos locales.")
         return
+    
+    # Elege un mundo local para subir
     world = choose(
         worlds,
         lambda item: (
@@ -225,9 +230,11 @@ def push_menu(settings: Settings, storage: R2Storage) -> None:
     if world is None or not confirm(f"\n¿Confirmás subir '{world.name}' a la nube?"):
         print("\nOperación cancelada.")
         return
-
+    
     remote_manifest = storage.read_manifest(world.name)
     local_base = read_base_version(settings.worlds_path, world.name)
+    
+    # Verificar si se puede pushear
     if not _allow_push_lock(storage, world.name, settings.player_name):
         print("\nOperación cancelada.")
         return
@@ -235,15 +242,47 @@ def push_menu(settings: Settings, storage: R2Storage) -> None:
         print("\nOperación cancelada.")
         return
 
+    # Determina la próxima versión a subir
     version = next_version(remote_manifest)
     with tempfile.TemporaryDirectory(prefix="bifrost-push-") as temporary_dir:
         zip_path = create_zip(world.path, Path(temporary_dir) / "world.zip")
         manifest = build_manifest(zip_path, world.name, version, settings.player_name)
+        
+        # Verifica nuevamente el lock y el manifest remoto antes de subir
         if not _allow_push_lock(
             storage, world.name, settings.player_name, announce_own=False
         ):
             print("\nOperación cancelada antes de iniciar la transferencia.")
             return
+        
+        # Verifica que el manifest remoto no haya cambiado desde el inicio del push
+        if not _remote_manifest_unchanged(storage, world.name, remote_manifest):
+            print("\nOperación cancelada antes de iniciar la transferencia.")
+            return
+        
+        # Si hay manifest remoto, archiva la versión actual y poda versiones antiguas
+        if remote_manifest is not None:
+            archived = archive_current_version(storage, world.name, remote_manifest)
+            removed_versions = prune_remote_versions(storage, world.name)
+            if archived:
+                print(f"[historial] Versión {remote_manifest['version']} preservada.")
+            if removed_versions:
+                removed = ", ".join(str(item) for item in removed_versions)
+                print(f"[historial] Versiones antiguas eliminadas: {removed}.")
+
+        # Subir el ZIP y actualizar el manifest remoto
+        if not _allow_push_lock(
+            storage, world.name, settings.player_name, announce_own=False
+        ):
+            print("\nOperación cancelada antes de iniciar la transferencia.")
+            return
+        
+        # Verifica nuevamente que el manifest remoto no haya cambiado desde el inicio del push
+        if not _remote_manifest_unchanged(storage, world.name, remote_manifest):
+            print("\nOperación cancelada antes de iniciar la transferencia.")
+            return
+        
+        # Si todo está bien, procede con la subida
         print(f"[push] Subiendo ZIP de {_format_size(zip_path.stat().st_size)}...")
         storage.upload_file(zip_path, current_zip_key(world.name))
         storage.write_manifest(world.name, manifest)
@@ -306,6 +345,29 @@ def _allow_push_lock(
     print(f"    Jugador: {world_lock['player']} ({world_lock['machine']})")
     print(f"    El lock vence: {expiration:%Y-%m-%d %H:%M} UTC")
     print("    La publicación normal fue bloqueada para proteger su sesión.")
+    return False
+
+
+def _remote_manifest_unchanged(
+    storage: R2Storage, world_name: str, expected: Manifest | None
+) -> bool:
+    """Comprueba que la versión remota no cambió desde el inicio del push."""
+    try:
+        current = storage.read_manifest(world_name)
+        if expected is None:
+            matches = current is None
+        else:
+            matches = (
+                current is not None
+                and current["version"] == expected["version"]
+                and current["sha256"].lower() == expected["sha256"].lower()
+            )
+    except (KeyError, TypeError, ValueError):
+        matches = False
+    if matches:
+        return True
+    print(f"\n[CONFLICTO] La versión remota de '{world_name}' cambió durante el push.")
+    print("    La publicación fue bloqueada antes de sobrescribir el mundo vigente.")
     return False
 
 
