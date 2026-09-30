@@ -82,6 +82,72 @@ def allow_pull(settings: Settings, world_name: str, manifest: Manifest) -> bool:
     return True
 
 
+def _format_size(size_bytes: int) -> str:
+    """Formatea una cantidad de bytes con una unidad legible."""
+    size = float(size_bytes)
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "bytes" else f"{size:.1f} {unit}"
+        size /= 1024
+    raise AssertionError("Unidad de tamaño inalcanzable")
+
+
+def status_menu(storage: R2Storage) -> None:
+    """Muestra la versión remota y el lock activo de todos los mundos."""
+    print("\n=== Estado de los mundos ===\n")
+    
+    # Obtiene nombres de mundos remotos
+    world_names = storage.list_worlds()
+    if not world_names:
+        print("No hay mundos en la nube.")
+        return
+
+    # Por cada mundo, muestra su manifest y estado de lock
+    for index, world_name in enumerate(world_names):
+        
+        # Muestra el nombre del mundo
+        if index:
+            print()
+        print(world_name)
+
+        # Verifica la validez del manifest remoto
+        invalid_manifest = False
+        try:
+            manifest = storage.read_manifest(world_name)
+        except (TypeError, ValueError):
+            manifest = None
+            invalid_manifest = True
+
+        if invalid_manifest:
+            print("  Manifest:       Inválido")
+        elif manifest is None:
+            print("  Manifest:       No disponible")
+        else:
+            try:
+                uploaded_at = parse_iso_datetime(manifest["uploaded_at"])
+                print(f"  Versión:        {manifest['version']}")
+                print(f"  Última subida:  {uploaded_at:%Y-%m-%d %H:%M} UTC")
+                print(f"  Subido por:     {manifest['uploaded_by']}")
+                print(f"  Tamaño:         {_format_size(manifest['size'])}")
+            except (KeyError, TypeError, ValueError):
+                print("  Manifest:       Inválido")
+
+        # Verifica el estado del lock remoto
+        try:
+            world_lock = active_lock(storage, world_name)
+            if world_lock is None:
+                print("  Estado:         Libre")
+            else:
+                expiration = parse_iso_datetime(world_lock["expires_at"])
+                print(
+                    f"  Estado:         En uso por {world_lock['player']} "
+                    f"({world_lock['machine']})"
+                )
+                print(f"  Lock vence:     {expiration:%Y-%m-%d %H:%M} UTC")
+        except (KeyError, TypeError, ValueError):
+            print("  Estado:         Lock inválido")
+
+
 def push_menu(settings: Settings, storage: R2Storage) -> None:
     """Sube un mundo local a la nube, reemplazando la versión remota si existe."""
     print("\n=== Subir un mundo ===\n")
@@ -225,18 +291,21 @@ def run_menu(settings: Settings, storage: R2Storage) -> None:
     """Muestra el menú principal y ejecuta la opción elegida por el usuario."""
     while True:
         print("\n=== Bifröst ===")
-        print("  1) Subir un mundo")
-        print("  2) Descargar un mundo")
-        print("  3) Ver/liberar lock")
-        print("  4) Salir")
+        print("  1) Estado de los mundos")
+        print("  2) Subir un mundo")
+        print("  3) Descargar un mundo")
+        print("  4) Ver/liberar lock")
+        print("  5) Salir")
         option = input("\nElegí una opción: ").strip()
         if option == "1":
-            push_menu(settings, storage)
+            status_menu(storage)
         elif option == "2":
-            pull_menu(settings, storage)
+            push_menu(settings, storage)
         elif option == "3":
-            lock_menu(settings, storage)
+            pull_menu(settings, storage)
         elif option == "4":
+            lock_menu(settings, storage)
+        elif option == "5":
             print("\n¡Chau!")
             return
         else:

@@ -39,4 +39,3 @@ def save_manifest(manifest: Manifest, destination: str | os.PathLike[str]) -> Pa
 def next_version(remote_manifest: Manifest | None) -> int:
     """Calcula el siguiente número de versión a partir del manifest remoto."""
     return 1 if remote_manifest is None else remote_manifest["version"] + 1
-

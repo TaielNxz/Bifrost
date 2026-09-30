@@ -18,7 +18,7 @@ pyproject.toml metadata, dependencias y entrypoints
 
 Módulos del paquete:
 
-- `cli.py`: interacción y coordinación de push, pull y locks.
+- `cli.py`: interacción y coordinación de estado, push, pull y locks.
 - `config.py`: carga y validación de `.env`.
 - `models.py`: `World`, `Manifest` y `WorldLock`.
 - `local_worlds.py`: detección, backup e instalación local.
@@ -50,6 +50,8 @@ worlds/<nombre>/backups/<fecha>.zip  # reservada; flujo no implementado
 ```
 
 El manifest contiene `version`, `world`, `filename`, `size`, `sha256`, `uploaded_by` y `uploaded_at` UTC. Push asigna `1` o `version + 1`, sube primero el ZIP y publica el manifest al final. Después libera solamente un lock propio.
+
+La opción de estado es de solo lectura: muestra por mundo la versión, fecha, autor y tamaño del manifest, además del lock activo o el estado libre.
 
 Pull compara frescura, exige confirmación para forzar un lock ajeno y adquiere un lock de 12 horas. Descarga a un temporal, verifica SHA-256 y extrae en staging con validación de rutas. Solo entonces mueve el mundo anterior a `<nombre>_pre_pull_<timestamp>` e instala el nuevo; ante un fallo del movimiento final intenta restaurar el original. El lock permanece activo hasta el push.
 
