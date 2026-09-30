@@ -12,6 +12,10 @@ from .models import Manifest, WorldLock
 from .paths import WORLDS_PREFIX, lock_key, manifest_key
 
 
+class ConcurrentUpdateError(RuntimeError):
+    """Indica que una escritura condicional perdió una carrera remota."""
+
+
 class R2Storage:
     def __init__(self, settings: Settings, client: Any | None = None) -> None:
         """Inicializa el acceso a R2 con un cliente provisto o uno nuevo de boto3."""
@@ -41,6 +45,17 @@ class R2Storage:
             raise
         return json.loads(response["Body"].read().decode("utf-8"))
 
+    def get_json_with_etag(self, key: str) -> tuple[dict[str, Any] | None, str | None]:
+        """Lee un JSON junto con su ETag o devuelve dos valores None si no existe."""
+        try:
+            response = self.client.get_object(Bucket=self.bucket, Key=key)
+        except ClientError as error:
+            if self._is_not_found(error):
+                return None, None
+            raise
+        value = json.loads(response["Body"].read().decode("utf-8"))
+        return value, response["ETag"]
+
     def put_json(self, key: str, value: dict[str, Any]) -> None:
         """Serializa y guarda un diccionario como objeto JSON en R2."""
         self.client.put_object(
@@ -49,6 +64,27 @@ class R2Storage:
             Body=json.dumps(value, indent=4, ensure_ascii=False).encode("utf-8"),
             ContentType="application/json",
         )
+
+    def put_json_conditional(
+        self, key: str, value: dict[str, Any], expected_etag: str | None
+    ) -> str:
+        """Escribe un JSON solo si el objeto conserva el ETag esperado."""
+        condition = {"IfNoneMatch": "*"} if expected_etag is None else {"IfMatch": expected_etag}
+        try:
+            response = self.client.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=json.dumps(value, indent=4, ensure_ascii=False).encode("utf-8"),
+                ContentType="application/json",
+                **condition,
+            )
+        except ClientError as error:
+            code = str(error.response.get("Error", {}).get("Code", ""))
+            status = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if code in {"PreconditionFailed", "412"} or status == 412:
+                raise ConcurrentUpdateError("El estado remoto cambió durante la operación.") from error
+            raise
+        return response["ETag"]
 
     def delete(self, key: str) -> None:
         """Elimina de R2 el objeto correspondiente a una clave."""
@@ -85,22 +121,10 @@ class R2Storage:
         value = self.get_json(manifest_key(world_name))
         return value  # type: ignore[return-value]
 
-    def write_manifest(self, world_name: str, manifest: Manifest) -> None:
-        """Publica el manifest remoto de un mundo."""
-        self.put_json(manifest_key(world_name), manifest)
-
     def read_lock(self, world_name: str) -> WorldLock | None:
         """Lee el lock remoto de un mundo si existe."""
         value = self.get_json(lock_key(world_name))
         return value  # type: ignore[return-value]
-
-    def write_lock(self, world_name: str, world_lock: WorldLock) -> None:
-        """Guarda el lock remoto de un mundo."""
-        self.put_json(lock_key(world_name), world_lock)
-
-    def delete_lock(self, world_name: str) -> None:
-        """Elimina el lock remoto de un mundo."""
-        self.delete(lock_key(world_name))
 
     def list_worlds(self) -> list[str]:
         """Lista alfabéticamente los mundos presentes bajo el prefijo remoto."""

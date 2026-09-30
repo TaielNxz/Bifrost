@@ -9,7 +9,7 @@ from .paths import (
 )
 from .storage import R2Storage
 
-MAX_REMOTE_VERSIONS = 5
+MAX_PREVIOUS_REMOTE_VERSIONS = 5
 
 
 def archive_current_version(
@@ -26,11 +26,27 @@ def archive_current_version(
             f"La versión histórica {version} de '{world_name}' ya existe con otro hash."
         )
 
-    zip_key = version_zip_key(world_name, version)
-    storage.copy(current_zip_key(world_name), zip_key)
+    if manifest["filename"] == current_zip_key(world_name):
+        zip_key = version_zip_key(world_name, version)
+        storage.copy(current_zip_key(world_name), zip_key)
+    else:
+        zip_key = manifest["filename"]
     archived_manifest = cast(Manifest, {**manifest, "filename": zip_key})
     storage.put_json(manifest_key, archived_manifest)
     return True
+
+
+def record_published_version(
+    storage: R2Storage, world_name: str, manifest: Manifest
+) -> None:
+    """Registra el manifest auxiliar de una versión publicada inmutable."""
+    key = version_manifest_key(world_name, manifest["version"])
+    existing = storage.get_json(key)
+    if existing is not None and existing.get("sha256") != manifest["sha256"]:
+        raise RuntimeError(
+            f"La versión histórica {manifest['version']} de '{world_name}' tiene otro hash."
+        )
+    storage.put_json(key, manifest)
 
 
 def _version_from_key(world_name: str, key: str) -> int | None:
@@ -45,7 +61,9 @@ def _version_from_key(world_name: str, key: str) -> int | None:
 
 
 def prune_remote_versions(
-    storage: R2Storage, world_name: str, keep: int = MAX_REMOTE_VERSIONS
+    storage: R2Storage,
+    world_name: str,
+    keep: int = MAX_PREVIOUS_REMOTE_VERSIONS,
 ) -> list[int]:
     """Elimina las versiones históricas más antiguas y devuelve sus números."""
     if keep < 1:

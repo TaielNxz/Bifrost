@@ -25,6 +25,7 @@ def _validate_base(world_name: str, value: object) -> LocalBase:
         raise RuntimeError(f"El estado local de '{world_name}' no es válido.")
     version = value.get("version")
     sha256 = value.get("sha256")
+    session_id = value.get("session_id")
     if isinstance(version, bool) or not isinstance(version, int) or version < 1:
         raise RuntimeError(f"La versión base local de '{world_name}' no es válida.")
     if (
@@ -33,7 +34,12 @@ def _validate_base(world_name: str, value: object) -> LocalBase:
         or any(character not in "0123456789abcdefABCDEF" for character in sha256)
     ):
         raise RuntimeError(f"El SHA-256 base local de '{world_name}' no es válido.")
-    return {"version": version, "sha256": sha256.lower()}
+    if session_id is not None and (not isinstance(session_id, str) or not session_id):
+        raise RuntimeError(f"La sesión local de '{world_name}' no es válida.")
+    base: LocalBase = {"version": version, "sha256": sha256.lower()}
+    if session_id is not None:
+        base["session_id"] = session_id
+    return base
 
 
 def _load_state(worlds_path: str | Path) -> dict[str, Any]:
@@ -65,10 +71,17 @@ def read_base_version(worlds_path: str | Path, world_name: str) -> LocalBase | N
 
 
 def save_base_version(
-    worlds_path: str | Path, world_name: str, version: int, sha256: str
+    worlds_path: str | Path,
+    world_name: str,
+    version: int,
+    sha256: str,
+    session_id: str | None = None,
 ) -> LocalBase:
     """Guarda atómicamente la versión base local de un mundo."""
-    base = _validate_base(world_name, {"version": version, "sha256": sha256})
+    value = {"version": version, "sha256": sha256}
+    if session_id is not None:
+        value["session_id"] = session_id
+    base = _validate_base(world_name, value)
     state = _load_state(worlds_path)
     worlds = state["worlds"]
     for stored_name in list(worlds):

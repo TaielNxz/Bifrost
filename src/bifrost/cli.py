@@ -1,5 +1,6 @@
 import argparse
 import tempfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Sequence, TypeVar
@@ -8,12 +9,23 @@ from .archives import create_zip, extract_zip, verify_zip
 from .config import Settings, load_settings
 from .local_state import read_base_version, save_base_version
 from .local_worlds import find_world, install_staged_world, list_worlds, save_world_copy
-from .locks import acquire_lock, active_lock, release_lock
+from .locks import active_lock_value, build_lock
 from .manifests import build_manifest, next_version, parse_iso_datetime
-from .models import LocalBase, Manifest, World
-from .paths import current_zip_key
-from .storage import R2Storage
-from .versions import archive_current_version, prune_remote_versions
+from .models import LocalBase, Manifest, World, WorldLock
+from .paths import version_upload_zip_key
+from .remote_state import (
+    StateSnapshot,
+    commit_world_state,
+    read_world_state,
+    updated_world_state,
+)
+from .storage import ConcurrentUpdateError, R2Storage
+from .versions import (
+    MAX_PREVIOUS_REMOTE_VERSIONS,
+    archive_current_version,
+    prune_remote_versions,
+    record_published_version,
+)
 
 T = TypeVar("T")
 
@@ -153,6 +165,17 @@ def _format_size(size_bytes: int) -> str:
     raise AssertionError("Unidad de tamaño inalcanzable")
 
 
+def _remote_worlds(storage: R2Storage) -> list[tuple[str, Manifest, StateSnapshot]]:
+    """Lista mundos remotos que poseen un manifest legible en su estado."""
+    worlds = []
+    for name in storage.list_worlds():
+        snapshot = read_world_state(storage, name)
+        manifest = snapshot.value["manifest"]
+        if manifest is not None:
+            worlds.append((name, manifest, snapshot))
+    return worlds
+
+
 def status_menu(storage: R2Storage) -> None:
     """Muestra la versión remota y el lock activo de todos los mundos."""
     print("\n=== Estado de los mundos ===\n")
@@ -171,31 +194,18 @@ def status_menu(storage: R2Storage) -> None:
             print()
         print(world_name)
 
-        # Verifica la validez del manifest remoto
-        invalid_manifest = False
         try:
-            manifest = storage.read_manifest(world_name)
-        except (TypeError, ValueError):
-            manifest = None
-            invalid_manifest = True
-
-        if invalid_manifest:
-            print("  Manifest:       Inválido")
-        elif manifest is None:
-            print("  Manifest:       No disponible")
-        else:
-            try:
+            snapshot = read_world_state(storage, world_name)
+            manifest = snapshot.value["manifest"]
+            if manifest is None:
+                print("  Manifest:       No disponible")
+            else:
                 uploaded_at = parse_iso_datetime(manifest["uploaded_at"])
                 print(f"  Versión:        {manifest['version']}")
                 print(f"  Última subida:  {uploaded_at:%Y-%m-%d %H:%M} UTC")
                 print(f"  Subido por:     {manifest['uploaded_by']}")
                 print(f"  Tamaño:         {_format_size(manifest['size'])}")
-            except (KeyError, TypeError, ValueError):
-                print("  Manifest:       Inválido")
-
-        # Verifica el estado del lock remoto
-        try:
-            world_lock = active_lock(storage, world_name)
+            world_lock = active_lock_value(snapshot.value["lock"])
             if world_lock is None:
                 print("  Estado:         Libre")
             else:
@@ -205,21 +215,18 @@ def status_menu(storage: R2Storage) -> None:
                     f"({world_lock['machine']})"
                 )
                 print(f"  Lock vence:     {expiration:%Y-%m-%d %H:%M} UTC")
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, RuntimeError):
+            print("  Manifest:       Inválido")
             print("  Estado:         Lock inválido")
 
 
 def push_menu(settings: Settings, storage: R2Storage) -> None:
-    """Sube un mundo local a la nube, reemplazando la versión remota si existe."""
+    """Publica un mundo mediante un commit condicional del estado remoto."""
     print("\n=== Subir un mundo ===\n")
-    
-    # Obtiene la lista de mundos locales
     worlds = list_worlds(settings.worlds_path)
     if not worlds:
         print("No hay mundos locales.")
         return
-    
-    # Elege un mundo local para subir
     world = choose(
         worlds,
         lambda item: (
@@ -230,76 +237,61 @@ def push_menu(settings: Settings, storage: R2Storage) -> None:
     if world is None or not confirm(f"\n¿Confirmás subir '{world.name}' a la nube?"):
         print("\nOperación cancelada.")
         return
-    
-    remote_manifest = storage.read_manifest(world.name)
+
+    snapshot = read_world_state(storage, world.name)
+    remote_manifest = snapshot.value["manifest"]
     local_base = read_base_version(settings.worlds_path, world.name)
-    
-    # Verificar si se puede pushear
-    if not _allow_push_lock(storage, world.name, settings.player_name):
+    world_lock = active_lock_value(snapshot.value["lock"])
+    if not _allow_push_lock(world.name, world_lock, settings.player_name, local_base):
         print("\nOperación cancelada.")
         return
     if not allow_push(world, remote_manifest, local_base):
         print("\nOperación cancelada.")
         return
 
-    # Determina la próxima versión a subir
     version = next_version(remote_manifest)
+    zip_key = version_upload_zip_key(world.name, version, uuid.uuid4().hex)
     with tempfile.TemporaryDirectory(prefix="bifrost-push-") as temporary_dir:
         zip_path = create_zip(world.path, Path(temporary_dir) / "world.zip")
-        manifest = build_manifest(zip_path, world.name, version, settings.player_name)
-        
-        # Verifica nuevamente el lock y el manifest remoto antes de subir
-        if not _allow_push_lock(
-            storage, world.name, settings.player_name, announce_own=False
-        ):
-            print("\nOperación cancelada antes de iniciar la transferencia.")
-            return
-        
-        # Verifica que el manifest remoto no haya cambiado desde el inicio del push
-        if not _remote_manifest_unchanged(storage, world.name, remote_manifest):
-            print("\nOperación cancelada antes de iniciar la transferencia.")
-            return
-        
-        # Si hay manifest remoto, archiva la versión actual y poda versiones antiguas
+        manifest = build_manifest(
+            zip_path, world.name, version, settings.player_name, filename=zip_key
+        )
         if remote_manifest is not None:
             archived = archive_current_version(storage, world.name, remote_manifest)
-            removed_versions = prune_remote_versions(storage, world.name)
             if archived:
                 print(f"[historial] Versión {remote_manifest['version']} preservada.")
-            if removed_versions:
-                removed = ", ".join(str(item) for item in removed_versions)
-                print(f"[historial] Versiones antiguas eliminadas: {removed}.")
 
-        # Subir el ZIP y actualizar el manifest remoto
-        if not _allow_push_lock(
-            storage, world.name, settings.player_name, announce_own=False
-        ):
-            print("\nOperación cancelada antes de iniciar la transferencia.")
-            return
-        
-        # Verifica nuevamente que el manifest remoto no haya cambiado desde el inicio del push
-        if not _remote_manifest_unchanged(storage, world.name, remote_manifest):
-            print("\nOperación cancelada antes de iniciar la transferencia.")
-            return
-        
-        # Si todo está bien, procede con la subida
         print(f"[push] Subiendo ZIP de {_format_size(zip_path.stat().st_size)}...")
-        storage.upload_file(zip_path, current_zip_key(world.name))
-        storage.write_manifest(world.name, manifest)
+        storage.upload_file(zip_path, zip_key)
+        next_state = updated_world_state(snapshot, manifest=manifest, world_lock=None)
+        try:
+            commit_world_state(storage, world.name, snapshot, next_state)
+        except ConcurrentUpdateError:
+            storage.delete(zip_key)
+            print(f"\n[CONFLICTO] El estado remoto de '{world.name}' cambió durante el push.")
+            print("    El ZIP candidato fue descartado y la versión oficial no se modificó.")
+            return
+
         save_base_version(
             settings.worlds_path, world.name, manifest["version"], manifest["sha256"]
         )
+        record_published_version(storage, world.name, manifest)
+        removed_versions = prune_remote_versions(
+            storage, world.name, keep=MAX_PREVIOUS_REMOTE_VERSIONS + 1
+        )
+        if removed_versions:
+            removed = ", ".join(str(item) for item in removed_versions)
+            print(f"[historial] Versiones antiguas eliminadas: {removed}.")
 
-    world_lock = active_lock(storage, world.name)
-    if world_lock and world_lock["player"] == settings.player_name:
-        release_lock(storage, world.name)
+    if world_lock is not None:
         print("[lock] Liberado")
     print(f"\n[OK] '{world.name}' subido correctamente (versión {version}).")
 
 
-def _allow_lock_override(storage: R2Storage, world_name: str, player: str) -> bool:
+def _allow_lock_override(
+    world_lock: WorldLock | None, world_name: str, player: str
+) -> bool:
     """Devuelve True si se permite forzar el lock, o False si se cancela."""
-    world_lock = active_lock(storage, world_name)
     if world_lock is None:
         return True
     if world_lock["player"] == player:
@@ -315,31 +307,23 @@ def _allow_lock_override(storage: R2Storage, world_name: str, player: str) -> bo
 
 
 def _allow_push_lock(
-    storage: R2Storage, world_name: str, player: str, announce_own: bool = True
+    world_name: str,
+    world_lock: WorldLock | None,
+    player: str,
+    local_base: LocalBase | None,
 ) -> bool:
-    """Permite el push si no hay lock activo o si pertenece al jugador actual."""
-    # Se obtiene lock remoto del mundo.
-    try:
-        world_lock = active_lock(storage, world_name)
-    except (KeyError, TypeError, ValueError):
-        print(f"\n[BLOQUEADO] El lock remoto de '{world_name}' no es válido.")
-        print("    La subida fue bloqueada porque no se puede determinar quién está hosteando.")
-        return False
-    
-    # Caso 1: No hay lock activo
-    #         Se permite el push
+    """Valida una vez que el lock leído autoriza al jugador y su sesión."""
     if world_lock is None:
         return True
-    
-    # Caso 2: Hay lock activo y pertenece al jugador actual. 
-    #         Se permite el push
     if world_lock["player"] == player:
-        if announce_own:
-            print(f"\n[INFO] El lock activo de '{world_name}' te pertenece.")
+        remote_session = world_lock.get("session_id")
+        local_session = local_base.get("session_id") if local_base is not None else None
+        if remote_session is not None and remote_session != local_session:
+            print(f"\n[BLOQUEADO] El lock de '{world_name}' pertenece a otra sesión tuya.")
+            print("    Volvé a descargar para hostear o liberá el lock conscientemente.")
+            return False
+        print(f"\n[INFO] El lock activo de '{world_name}' pertenece a esta sesión.")
         return True
-    
-    # Caso 3: Hay lock activo pero no pertenece al jugador actual. 
-    #         Se bloquea el push
     expiration = parse_iso_datetime(world_lock["expires_at"])
     print(f"\n[BLOQUEADO] '{world_name}' está siendo usado por otro jugador.")
     print(f"    Jugador: {world_lock['player']} ({world_lock['machine']})")
@@ -348,37 +332,10 @@ def _allow_push_lock(
     return False
 
 
-def _remote_manifest_unchanged(
-    storage: R2Storage, world_name: str, expected: Manifest | None
-) -> bool:
-    """Comprueba que la versión remota no cambió desde el inicio del push."""
-    try:
-        current = storage.read_manifest(world_name)
-        if expected is None:
-            matches = current is None
-        else:
-            matches = (
-                current is not None
-                and current["version"] == expected["version"]
-                and current["sha256"].lower() == expected["sha256"].lower()
-            )
-    except (KeyError, TypeError, ValueError):
-        matches = False
-    if matches:
-        return True
-    print(f"\n[CONFLICTO] La versión remota de '{world_name}' cambió durante el push.")
-    print("    La publicación fue bloqueada antes de sobrescribir el mundo vigente.")
-    return False
-
-
 def pull_menu(settings: Settings, storage: R2Storage) -> None:
     """Descarga un mundo para hostear, reemplaza la copia local y toma el lock."""
     print("\n=== Descargar para hostear ===\n")
-    remote_worlds = []
-    for name in storage.list_worlds():
-        manifest = storage.read_manifest(name)
-        if manifest is not None:
-            remote_worlds.append((name, manifest))
+    remote_worlds = _remote_worlds(storage)
     if not remote_worlds:
         print("No hay mundos legibles en la nube todavía.")
         return
@@ -394,31 +351,46 @@ def pull_menu(settings: Settings, storage: R2Storage) -> None:
     )
     if selected is None:
         return
-    world_name, manifest = selected
+    world_name, manifest, snapshot = selected
     if not confirm(f"\n¿Descargar '{world_name}' y reemplazar tu copia local?"):
         print("\nOperación cancelada.")
         return
     if not allow_pull(settings, world_name, manifest):
         return
-    if not _allow_lock_override(storage, world_name, settings.player_name):
+    world_lock = active_lock_value(snapshot.value["lock"])
+    if not _allow_lock_override(world_lock, world_name, settings.player_name):
         print("\nOperación cancelada.")
         return
 
-    world_lock = acquire_lock(storage, world_name, settings.player_name)
-    print(f"[lock] Adquirido hasta {parse_iso_datetime(world_lock['expires_at']):%Y-%m-%d %H:%M} UTC")
+    world_lock = build_lock(
+        settings.player_name, base_version=manifest["version"]
+    )
+    locked_state = updated_world_state(snapshot, manifest=manifest, world_lock=world_lock)
+    try:
+        commit_world_state(storage, world_name, snapshot, locked_state)
+    except ConcurrentUpdateError:
+        print("\n[CONFLICTO] El estado remoto cambió antes de adquirir el lock.")
+        print("    Volvé a intentar para trabajar con la versión vigente.")
+        return
+    print(
+        f"[lock] Adquirido hasta "
+        f"{parse_iso_datetime(world_lock['expires_at']):%Y-%m-%d %H:%M} UTC"
+    )
 
     with tempfile.TemporaryDirectory(prefix="bifrost-pull-") as temporary_dir:
         temporary_root = Path(temporary_dir)
-        zip_path = storage.download_file(
-            current_zip_key(world_name), temporary_root / "world.zip"
-        )
+        zip_path = storage.download_file(manifest["filename"], temporary_root / "world.zip")
         if not verify_zip(zip_path, manifest["sha256"]):
             print("\n[ERROR] El ZIP descargado no coincide con el manifest.")
             return
         staged_world = extract_zip(zip_path, temporary_root / "staged-world")
         backup = install_staged_world(settings.worlds_path, world_name, staged_world)
         save_base_version(
-            settings.worlds_path, world_name, manifest["version"], manifest["sha256"]
+            settings.worlds_path,
+            world_name,
+            manifest["version"],
+            manifest["sha256"],
+            session_id=world_lock["session_id"],
         )
 
     print(f"\n[OK] '{world_name}' descargado y verificado.")
@@ -430,12 +402,7 @@ def copy_menu(settings: Settings, storage: R2Storage) -> None:
     """Descarga un ZIP verificado sin reemplazar el mundo ni adquirir su lock."""
     print("\n=== Descargar una copia ===\n")
     
-    # Obtiene nombres de mundos remotos
-    remote_worlds = []
-    for name in storage.list_worlds():
-        manifest = storage.read_manifest(name)
-        if manifest is not None:
-            remote_worlds.append((name, manifest))
+    remote_worlds = _remote_worlds(storage)
     if not remote_worlds:
         print("No hay mundos legibles en la nube todavía.")
         return
@@ -455,13 +422,13 @@ def copy_menu(settings: Settings, storage: R2Storage) -> None:
 
     # Descarga el ZIP del mundo elegido y lo guarda en la carpeta de mundos locales
     print("\n[INFO] Esta descarga no reemplaza tu mundo local ni adquiere el lock.")
-    world_name, manifest = selected
+    world_name, manifest, _ = selected
     if not confirm(f"¿Guardar una copia de '{world_name}'?"):
         print("\nOperación cancelada.")
         return
     with tempfile.TemporaryDirectory(prefix="bifrost-copy-") as temporary_dir:
         zip_path = storage.download_file(
-            current_zip_key(world_name), Path(temporary_dir) / "world.zip"
+            manifest["filename"], Path(temporary_dir) / "world.zip"
         )
         if not verify_zip(zip_path, manifest["sha256"]):
             print("\n[ERROR] El ZIP descargado no coincide con el manifest.")
@@ -481,33 +448,43 @@ def copy_menu(settings: Settings, storage: R2Storage) -> None:
 def lock_menu(settings: Settings, storage: R2Storage) -> None:
     """Muestra el estado de los locks y permite liberar uno propio."""
     print("\n=== Estado del lock ===\n")
-    lock_info = [(name, active_lock(storage, name)) for name in storage.list_worlds()]
+    lock_info = []
+    for name in storage.list_worlds():
+        snapshot = read_world_state(storage, name)
+        lock_info.append((name, active_lock_value(snapshot.value["lock"]), snapshot))
     if not lock_info:
         print("No hay mundos en la nube.")
         return
 
-    def format_lock(item: tuple[str, object]) -> str:
+    def format_lock(item: tuple[str, WorldLock | None, StateSnapshot]) -> str:
         """Formatea un mundo y el estado de su lock para el menú."""
-        name, world_lock = item
+        name, world_lock, _ = item
         if world_lock is None:
             return f"{name:<15} (libre)"
-        expiration = parse_iso_datetime(world_lock["expires_at"])  # type: ignore[index]
+        expiration = parse_iso_datetime(world_lock["expires_at"])
         return (
-            f"{name:<15} (bloqueado por {world_lock['player']} "  # type: ignore[index]
+            f"{name:<15} (bloqueado por {world_lock['player']} "
             f"hasta {expiration:%Y-%m-%d %H:%M} UTC)"
         )
 
     selected = choose(lock_info, format_lock)
     if selected is None:
         return
-    world_name, world_lock = selected
+    world_name, world_lock, snapshot = selected
     if world_lock is None:
         print(f"\n[INFO] '{world_name}' no tiene lock activo.")
         return
     if world_lock["player"] != settings.player_name:
         print(f"\n[!] El lock es de '{world_lock['player']}', no tuyo.")
     if confirm(f"¿Liberar el lock de '{world_name}'?"):
-        release_lock(storage, world_name)
+        unlocked = updated_world_state(
+            snapshot, manifest=snapshot.value["manifest"], world_lock=None
+        )
+        try:
+            commit_world_state(storage, world_name, snapshot, unlocked)
+        except ConcurrentUpdateError:
+            print("\n[CONFLICTO] El estado remoto cambió; no se liberó ningún lock.")
+            return
         print("[lock] Liberado")
 
 

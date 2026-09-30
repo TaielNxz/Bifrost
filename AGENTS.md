@@ -24,6 +24,7 @@ Módulos del paquete:
 - `local_worlds.py`: detección, backup, instalación local y copias independientes.
 - `local_state.py`: versión y SHA-256 base de cada mundo local.
 - `storage.py`: operaciones S3/R2.
+- `remote_state.py`: snapshots y commits condicionales de `state.json`.
 - `manifests.py`: metadata, fechas y versiones.
 - `versions.py`: snapshots remotos y retención de versiones anteriores.
 - `locks.py`: creación, vencimiento y persistencia de locks.
@@ -45,19 +46,19 @@ Cada subcarpeta directa de `VALHEIM_WORLDS_PATH` es un mundo, excepto nombres co
 Claves de R2:
 
 ```text
-worlds/<nombre>/manifest.json
-worlds/<nombre>/lock.json
-worlds/<nombre>/current/world.zip
-worlds/<nombre>/versions/<versión>/world.zip
+worlds/<nombre>/state.json
+worlds/<nombre>/versions/<versión>/<upload-id>/world.zip
 worlds/<nombre>/versions/<versión>/manifest.json
 worlds/<nombre>/backups/<fecha>.zip  # reservada; flujo no implementado
 ```
 
-El manifest contiene `version`, `world`, `filename`, `size`, `sha256`, `uploaded_by` y `uploaded_at` UTC. Push asigna `1` o `version + 1`, valida lock y manifest durante la preparación, archiva la versión vigente, sube primero el ZIP nuevo y publica su manifest al final. Un lock ajeno o inválido bloquea la publicación; después de un push exitoso se libera solamente un lock propio.
+`state.json` es autoritativo y contiene `revision`, manifest y lock. El código conserva lectura compatible de `manifest.json`, `lock.json` y `current/world.zip` heredados cuando todavía no existe estado canónico.
 
-El historial remoto conserva como máximo cinco versiones anteriores bajo `versions/<versión>/`, cada una con ZIP y manifest. El archivado ocurre antes de reemplazar `current/`; un snapshot con el mismo número y otro hash es un conflicto y nunca se sobrescribe.
+El manifest contiene `version`, `world`, `filename`, `size`, `sha256`, `uploaded_by` y `uploaded_at` UTC. Push lee una vez el estado y su ETag, valida base y lock, sube el ZIP a una clave única y publica mediante `If-Match`/`If-None-Match`. El commit cambia manifest y libera lock atómicamente; una precondición fallida no modifica la versión oficial.
 
-`.bifrost-state.json` vive directamente en `VALHEIM_WORLDS_PATH` y registra versión/hash base tras cada pull o push exitoso. Si existe un manifest remoto, el push exige una base local coincidente y se bloquea ante ausencia o discrepancia. El archivo no pertenece a ningún mundo ni se incluye en ZIP/R2.
+El historial remoto conserva la versión vigente y como máximo cinco anteriores bajo `versions/<versión>/`. Los ZIP usan un `upload-id` único para que candidatos concurrentes nunca se sobrescriban.
+
+`.bifrost-state.json` vive directamente en `VALHEIM_WORLDS_PATH` y registra versión/hash base y, al hostear, el `session_id` del lock. Si existe un manifest remoto, el push exige una base local coincidente y se bloquea ante ausencia o discrepancia. El archivo no pertenece a ningún mundo ni se incluye en ZIP/R2.
 
 La descarga para hostear reemplaza el mundo local, registra la base y adquiere el lock. La descarga de copia guarda un ZIP verificado en `.bifrost-copies`, carpeta excluida de la detección de mundos; no reemplaza el mundo, no registra una base y no toca locks.
 
@@ -80,11 +81,10 @@ Pull compara frescura, exige confirmación para forzar un lock ajeno y adquiere 
 
 ## Limitaciones conocidas
 
-- La validación del lock durante push reduce carreras, pero no es atómica con la escritura remota; el lock todavía puede cambiar entre la última comprobación y la publicación.
 - La advertencia secundaria de frescura usa el `mtime` de la carpeta raíz, que puede no representar el archivo más reciente; el control autoritativo de conflictos usa versión y hash base.
 - Se crean snapshots históricos remotos, pero todavía no existe un flujo de restauración; el helper de backups fechados sigue reservado.
 - La subida no verifica posteriormente el objeto remoto.
-- `version + 1` no es atómico; pushes concurrentes pueden colisionar.
+- Un cierre abrupto antes del commit puede dejar un ZIP candidato huérfano; los conflictos controlados sí lo eliminan.
 - Falta validar/sanitizar nombres de mundo y esquemas JSON remotos.
 - El nombre del jugador no identifica de forma única una sesión o máquina.
 
@@ -94,5 +94,5 @@ Pull compara frescura, exige confirmación para forzar un lock ajeno y adquiere 
 - Diferenciá objetos S3 inexistentes de errores de permisos, red o configuración sin filtrar secretos.
 - Las pruebas no deben necesitar credenciales, R2 ni mundos reales; usá temporales y mundos falsos.
 - Ejecutá las pruebas aplicables con `python -m unittest discover -s tests -v` o `python -m pytest`.
-- Para cambios de ZIP, pull, locks o push cubrí respectivamente round trip/hash, recuperación ante fallos, estados de lock y orden ZIP → manifest.
+- Para cambios de ZIP, pull, locks o push cubrí respectivamente round trip/hash, recuperación ante fallos, estados de lock y orden ZIP → commit condicional de estado.
 - No ejecutes integraciones que puedan tocar mundos o buckets compartidos sin autorización explícita. Informá qué quedó sin validar si falta infraestructura.

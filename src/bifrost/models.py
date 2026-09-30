@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 
 @dataclass(frozen=True)
@@ -30,6 +30,7 @@ class Manifest(TypedDict):
 class LocalBase(TypedDict):
     version: int
     sha256: str
+    session_id: NotRequired[str]
 
 
 class WorldLock(TypedDict):
@@ -37,3 +38,12 @@ class WorldLock(TypedDict):
     machine: str
     acquired_at: str
     expires_at: str
+    session_id: NotRequired[str]
+    base_version: NotRequired[int]
+
+
+class WorldState(TypedDict):
+    schema_version: int
+    revision: int
+    manifest: Manifest | None
+    lock: WorldLock | None

@@ -6,7 +6,7 @@ Cada descarga registra la versión base local. Si otra persona publica una versi
 
 La descarga para hostear reemplaza el mundo local de forma recuperable y adquiere su lock. La descarga de copia guarda un ZIP verificado en `.bifrost-copies` sin reemplazar mundos, adquirir locks ni modificar la versión base local.
 
-Antes de subir, Bifröst comprueba el lock al comenzar y nuevamente antes de transferir. Un lock ajeno activo bloquea la publicación; un lock propio o la ausencia de lock permiten continuar.
+Manifest y lock comparten un único `state.json`. Bifröst publica mediante una escritura condicional por ETag: si otro jugador cambia el estado durante un push, R2 rechaza el commit y la versión oficial permanece intacta.
 
 Cada push preserva la versión remota reemplazada en un historial de R2. Se conservan las cinco versiones anteriores más recientes para limitar el uso de almacenamiento.
 

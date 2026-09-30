@@ -1,9 +1,9 @@
 import socket
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from .manifests import parse_iso_datetime
 from .models import WorldLock
-from .storage import R2Storage
 
 LOCK_DURATION_HOURS = 12
 
@@ -19,34 +19,25 @@ def build_lock(
     machine: str | None = None,
     now: datetime | None = None,
     duration_hours: int = LOCK_DURATION_HOURS,
+    session_id: str | None = None,
+    base_version: int | None = None,
 ) -> WorldLock:
     """Construye un lock para un jugador con una duración determinada."""
     acquired_at = now or datetime.now(timezone.utc)
     expires_at = acquired_at + timedelta(hours=duration_hours)
-    return {
+    world_lock: WorldLock = {
         "player": player,
         "machine": machine or socket.gethostname(),
         "acquired_at": acquired_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "expires_at": expires_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "session_id": session_id or uuid.uuid4().hex,
     }
-
-
-def active_lock(storage: R2Storage, world_name: str) -> WorldLock | None:
-    """Obtiene el lock activo de un mundo o devuelve None si no existe o expiró."""
-    world_lock = storage.read_lock(world_name)
-    if world_lock is None or is_expired(world_lock):
-        return None
+    if base_version is not None:
+        world_lock["base_version"] = base_version
     return world_lock
 
 
-def acquire_lock(storage: R2Storage, world_name: str, player: str) -> WorldLock:
-    """Crea y guarda un nuevo lock remoto para el jugador indicado."""
-    world_lock = build_lock(player)
-    storage.write_lock(world_name, world_lock)
-    return world_lock
-
-
-def release_lock(storage: R2Storage, world_name: str) -> None:
-    """Elimina el lock remoto de un mundo."""
-    storage.delete_lock(world_name)
+def active_lock_value(world_lock: WorldLock | None) -> WorldLock | None:
+    """Devuelve el lock recibido solamente cuando existe y no expiró."""
+    return None if world_lock is None or is_expired(world_lock) else world_lock
 

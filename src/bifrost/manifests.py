@@ -14,14 +14,18 @@ def parse_iso_datetime(value: str) -> datetime:
 
 
 def build_manifest(
-    zip_path: str | os.PathLike[str], world_name: str, version: int, uploaded_by: str
+    zip_path: str | os.PathLike[str],
+    world_name: str,
+    version: int,
+    uploaded_by: str,
+    filename: str | None = None,
 ) -> Manifest:
     """Construye el manifest de una versión local lista para publicar."""
     path = Path(zip_path)
     return {
         "version": version,
         "world": world_name,
-        "filename": current_zip_key(world_name),
+        "filename": filename or current_zip_key(world_name),
         "size": path.stat().st_size,
         "sha256": calculate_sha256(path),
         "uploaded_by": uploaded_by,

@@ -1,6 +1,11 @@
 WORLDS_PREFIX = "worlds"
 
 
+def state_key(world_name: str) -> str:
+    """Construye la clave del estado remoto autoritativo de un mundo."""
+    return f"{WORLDS_PREFIX}/{world_name}/state.json"
+
+
 def manifest_key(world_name: str) -> str:
     """Construye la clave remota del manifest de un mundo."""
     return f"{WORLDS_PREFIX}/{world_name}/manifest.json"
@@ -29,6 +34,11 @@ def version_prefix(world_name: str, version: int) -> str:
 def version_zip_key(world_name: str, version: int) -> str:
     """Construye la clave del ZIP de una versión histórica."""
     return f"{version_prefix(world_name, version)}/world.zip"
+
+
+def version_upload_zip_key(world_name: str, version: int, upload_id: str) -> str:
+    """Construye una clave inmutable y única para un ZIP candidato."""
+    return f"{version_prefix(world_name, version)}/{upload_id}/world.zip"
 
 
 def version_manifest_key(world_name: str, version: int) -> str:

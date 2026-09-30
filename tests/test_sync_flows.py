@@ -12,29 +12,54 @@ from bifrost.cli import copy_menu, pull_menu, push_menu
 from bifrost.config import Settings
 from bifrost.local_state import read_base_version, save_base_version
 from bifrost.local_worlds import COPIES_DIRECTORY_NAME
+from bifrost.storage import ConcurrentUpdateError
 
 
 class FakeStorage:
     def __init__(self, manifest=None) -> None:
         self.events: list[str] = []
         self.manifest = manifest
+        self.world_lock = None
         self.objects: dict[str, object] = {}
+        self.etags: dict[str, str] = {}
+        self.etag_counter = 0
 
     def read_manifest(self, world_name):
         return self.manifest
 
     def upload_file(self, local_path, key):
         self.events.append("zip")
+        self.objects[key] = Path(local_path).read_bytes()
 
     def write_manifest(self, world_name, manifest):
         self.events.append("manifest")
         self.manifest = manifest
 
     def read_lock(self, world_name):
-        return None
+        return self.world_lock
 
     def get_json(self, key):
+        if key.endswith("/manifest.json") and "/versions/" not in key:
+            return self.manifest
+        if key.endswith("/lock.json"):
+            return self.world_lock
         return self.objects.get(key)
+
+    def get_json_with_etag(self, key):
+        return self.objects.get(key), self.etags.get(key)
+
+    def put_json_conditional(self, key, value, expected_etag):
+        current_etag = self.etags.get(key)
+        if current_etag != expected_etag:
+            raise ConcurrentUpdateError("conflict")
+        self.etag_counter += 1
+        etag = f'"etag-{self.etag_counter}"'
+        self.objects[key] = value
+        self.etags[key] = etag
+        self.manifest = value["manifest"]
+        self.world_lock = value["lock"]
+        self.events.append("state")
+        return etag
 
     def put_json(self, key, value):
         self.events.append("history_manifest")
@@ -76,7 +101,7 @@ class SyncFlowTests(unittest.TestCase):
             output = io.StringIO()
             with redirect_stdout(output), patch("builtins.input", side_effect=["1", "s"]):
                 push_menu(settings, storage)  # type: ignore[arg-type]
-            self.assertEqual(storage.events, ["zip", "manifest"])
+            self.assertEqual(storage.events, ["zip", "state", "history_manifest"])
             self.assertEqual(storage.manifest["uploaded_by"], "Taiel")
             self.assertEqual(read_base_version(root, "Asgard")["version"], 1)
             self.assertIn("Asgard          (4 bytes,", output.getvalue())
@@ -106,7 +131,7 @@ class SyncFlowTests(unittest.TestCase):
 
             self.assertEqual(
                 storage.events,
-                ["history_zip", "history_manifest", "zip", "manifest"],
+                ["history_zip", "history_manifest", "zip", "state", "history_manifest"],
             )
             self.assertEqual(storage.manifest["version"], 11)
             self.assertEqual(read_base_version(root, "Asgard")["version"], 11)
@@ -271,26 +296,56 @@ class SyncFlowTests(unittest.TestCase):
 
             self.assertEqual(
                 storage.events,
-                ["history_zip", "history_manifest", "zip", "manifest", "unlock"],
+                ["history_zip", "history_manifest", "zip", "state", "history_manifest"],
             )
             self.assertIsNone(storage.world_lock)
 
-    def test_push_rechecks_lock_before_upload(self) -> None:
-        class ChangingLockStorage(FakeStorage):
-            def __init__(self, manifest) -> None:
-                super().__init__(manifest)
-                self.lock_reads = 0
-
-            def read_lock(self, world_name):
-                self.lock_reads += 1
-                if self.lock_reads == 1:
-                    return None
-                return {
-                    "player": "Lucas",
-                    "machine": "PC-LUCAS",
+    def test_push_blocks_same_player_with_different_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            world = root / "Asgard"
+            world.mkdir()
+            (world / "save.db2").write_bytes(b"local progress")
+            manifest = {
+                "version": 10,
+                "world": "Asgard",
+                "filename": "worlds/Asgard/versions/10/id/world.zip",
+                "size": 100,
+                "sha256": "a" * 64,
+                "uploaded_by": "Taiel",
+                "uploaded_at": "2020-01-01T00:00:00Z",
+            }
+            storage = FakeStorage(manifest)
+            state_key = "worlds/Asgard/state.json"
+            storage.objects[state_key] = {
+                "schema_version": 1,
+                "revision": 11,
+                "manifest": manifest,
+                "lock": {
+                    "player": "Taiel",
+                    "machine": "OTRA-PC",
                     "acquired_at": "2099-01-01T00:00:00Z",
                     "expires_at": "2099-01-01T12:00:00Z",
-                }
+                    "session_id": "remote-session",
+                },
+            }
+            storage.etags[state_key] = '"etag-1"'
+            save_base_version(
+                root, "Asgard", 10, "a" * 64, session_id="local-session"
+            )
+            settings = Settings("url", "id", "secret", "bucket", root, "Taiel")
+            output = io.StringIO()
+
+            with redirect_stdout(output), patch("builtins.input", side_effect=["1", "s"]):
+                push_menu(settings, storage)  # type: ignore[arg-type]
+
+            self.assertNotIn("zip", storage.events)
+            self.assertIn("pertenece a otra sesión tuya", output.getvalue())
+
+    def test_push_conditional_commit_rejects_concurrent_change(self) -> None:
+        class ChangingStateStorage(FakeStorage):
+            def put_json_conditional(self, key, value, expected_etag):
+                raise ConcurrentUpdateError("conflict")
 
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
@@ -308,14 +363,18 @@ class SyncFlowTests(unittest.TestCase):
             }
             save_base_version(root, "Asgard", 10, "a" * 64)
             settings = Settings("url", "id", "secret", "bucket", root, "Taiel")
-            storage = ChangingLockStorage(remote_manifest)
+            storage = ChangingStateStorage(remote_manifest)
+            output = io.StringIO()
 
-            with patch("builtins.input", side_effect=["1", "s"]):
+            with redirect_stdout(output), patch("builtins.input", side_effect=["1", "s"]):
                 push_menu(settings, storage)  # type: ignore[arg-type]
 
-            self.assertNotIn("zip", storage.events)
-            self.assertNotIn("manifest", storage.events)
-            self.assertEqual(storage.lock_reads, 2)
+            self.assertEqual(storage.manifest["version"], 10)
+            self.assertNotIn("state", storage.events)
+            self.assertFalse(
+                any("/versions/11/" in key for key in storage.objects)
+            )
+            self.assertIn("versión oficial no se modificó", output.getvalue())
 
     def test_push_keeps_only_five_previous_remote_versions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -345,7 +404,7 @@ class SyncFlowTests(unittest.TestCase):
 
             history_keys = storage.list_keys("worlds/Asgard/versions/")
             history_versions = {int(key.split("/")[3]) for key in history_keys}
-            self.assertEqual(history_versions, {2, 3, 4, 5, 6})
+            self.assertEqual(history_versions, {2, 3, 4, 5, 6, 7})
             self.assertEqual(storage.manifest["version"], 7)
 
     def test_pull_list_displays_manifest_size_in_readable_format(self) -> None:
@@ -387,6 +446,10 @@ class SyncFlowTests(unittest.TestCase):
             def write_lock(self, world_name, world_lock):
                 self.lock = world_lock
 
+            def put_json_conditional(self, key, value, expected_etag):
+                self.lock = value["lock"]
+                return '"etag-1"'
+
             def download_file(self, key, destination):
                 return Path(shutil.copyfile(self.archive, destination))
 
@@ -409,15 +472,56 @@ class SyncFlowTests(unittest.TestCase):
                 "uploaded_at": "2026-09-30T22:15:00Z",
             }
             settings = Settings("url", "id", "secret", "bucket", worlds_root, "Taiel")
+            storage = PullStorage(archive, manifest)
 
             with patch("builtins.input", side_effect=["1", "s"]):
-                pull_menu(settings, PullStorage(archive, manifest))  # type: ignore[arg-type]
+                pull_menu(settings, storage)  # type: ignore[arg-type]
 
             self.assertEqual((worlds_root / "Asgard" / "save.db2").read_bytes(), b"remote progress")
-            self.assertEqual(
-                read_base_version(worlds_root, "Asgard"),
-                {"version": 12, "sha256": sha256},
-            )
+            local_base = read_base_version(worlds_root, "Asgard")
+            self.assertEqual(local_base["version"], 12)
+            self.assertEqual(local_base["sha256"], sha256)
+            self.assertEqual(local_base["session_id"], storage.lock["session_id"])
+
+    def test_pull_does_not_download_if_lock_commit_loses_race(self) -> None:
+        class ConcurrentPullStorage:
+            downloaded = False
+
+            def list_worlds(self):
+                return ["Asgard"]
+
+            def read_manifest(self, world_name):
+                return {
+                    "version": 12,
+                    "world": "Asgard",
+                    "filename": "worlds/Asgard/versions/12/id/world.zip",
+                    "size": 100,
+                    "sha256": "a" * 64,
+                    "uploaded_by": "Lucas",
+                    "uploaded_at": "2026-09-30T22:15:00Z",
+                }
+
+            def read_lock(self, world_name):
+                return None
+
+            def put_json_conditional(self, key, value, expected_etag):
+                raise ConcurrentUpdateError("conflict")
+
+            def download_file(self, key, destination):
+                self.downloaded = True
+                return Path(destination)
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            storage = ConcurrentPullStorage()
+            settings = Settings("url", "id", "secret", "bucket", root, "Taiel")
+            output = io.StringIO()
+
+            with redirect_stdout(output), patch("builtins.input", side_effect=["1", "s"]):
+                pull_menu(settings, storage)  # type: ignore[arg-type]
+
+            self.assertFalse(storage.downloaded)
+            self.assertIn("cambió antes de adquirir el lock", output.getvalue())
 
     def test_copy_downloads_verified_zip_without_lock_or_local_replacement(self) -> None:
         class CopyStorage:
@@ -476,6 +580,7 @@ class SyncFlowTests(unittest.TestCase):
             def read_manifest(self, world_name):
                 return {
                     "version": 4,
+                    "filename": "worlds/Asgard/current/world.zip",
                     "size": 100,
                     "sha256": "a" * 64,
                     "uploaded_at": "2026-09-30T22:15:00Z",

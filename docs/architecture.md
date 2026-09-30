@@ -9,6 +9,7 @@ El código instalable vive en `src/bifrost`. La terminal depende de los módulos
 - `local_state.py`: registro persistente de la versión base de cada mundo local.
 - `archives.py`: ZIP, SHA-256 y extracción segura.
 - `storage.py`: operaciones de bajo nivel contra R2/S3.
+- `remote_state.py`: lectura compatible y commits condicionales de `state.json`.
 - `manifests.py`: metadata, fechas y versiones.
 - `versions.py`: snapshots remotos y política de retención del historial.
 - `locks.py`: creación, vencimiento y persistencia de locks.
