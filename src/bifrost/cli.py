@@ -158,7 +158,7 @@ def push_menu(settings: Settings, storage: R2Storage) -> None:
     world = choose(
         worlds,
         lambda item: (
-            f"{item.name:<15} ({item.size_mb} MB, "
+            f"{item.name:<15} ({_format_size(item.size_bytes)}, "
             f"mod. {item.modified_at:%Y-%m-%d %H:%M})"
         ),
     )
@@ -175,7 +175,7 @@ def push_menu(settings: Settings, storage: R2Storage) -> None:
     with tempfile.TemporaryDirectory(prefix="bifrost-push-") as temporary_dir:
         zip_path = create_zip(world.path, Path(temporary_dir) / "world.zip")
         manifest = build_manifest(zip_path, world.name, version, settings.player_name)
-        print(f"[push] Subiendo ZIP de {zip_path.stat().st_size} bytes...")
+        print(f"[push] Subiendo ZIP de {_format_size(zip_path.stat().st_size)}...")
         storage.upload_file(zip_path, current_zip_key(world.name))
         storage.write_manifest(world.name, manifest)
 
@@ -219,6 +219,7 @@ def pull_menu(settings: Settings, storage: R2Storage) -> None:
         remote_worlds,
         lambda item: (
             f"{item[0]:<15} (versión {item[1]['version']}, "
+            f"{_format_size(item[1]['size'])}, "
             f"fecha {parse_iso_datetime(item[1]['uploaded_at']):%Y-%m-%d %H:%M} UTC, "
             f"subido por {item[1]['uploaded_by']})"
         ),
