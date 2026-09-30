@@ -228,6 +228,9 @@ def push_menu(settings: Settings, storage: R2Storage) -> None:
 
     remote_manifest = storage.read_manifest(world.name)
     local_base = read_base_version(settings.worlds_path, world.name)
+    if not _allow_push_lock(storage, world.name, settings.player_name):
+        print("\nOperación cancelada.")
+        return
     if not allow_push(world, remote_manifest, local_base):
         print("\nOperación cancelada.")
         return
@@ -236,6 +239,11 @@ def push_menu(settings: Settings, storage: R2Storage) -> None:
     with tempfile.TemporaryDirectory(prefix="bifrost-push-") as temporary_dir:
         zip_path = create_zip(world.path, Path(temporary_dir) / "world.zip")
         manifest = build_manifest(zip_path, world.name, version, settings.player_name)
+        if not _allow_push_lock(
+            storage, world.name, settings.player_name, announce_own=False
+        ):
+            print("\nOperación cancelada antes de iniciar la transferencia.")
+            return
         print(f"[push] Subiendo ZIP de {_format_size(zip_path.stat().st_size)}...")
         storage.upload_file(zip_path, current_zip_key(world.name))
         storage.write_manifest(world.name, manifest)
@@ -265,6 +273,40 @@ def _allow_lock_override(storage: R2Storage, world_name: str, player: str) -> bo
     )
     print(f"    Expira: {expiration:%Y-%m-%d %H:%M} UTC")
     return confirm("¿Forzar de todas formas?")
+
+
+def _allow_push_lock(
+    storage: R2Storage, world_name: str, player: str, announce_own: bool = True
+) -> bool:
+    """Permite el push si no hay lock activo o si pertenece al jugador actual."""
+    # Se obtiene lock remoto del mundo.
+    try:
+        world_lock = active_lock(storage, world_name)
+    except (KeyError, TypeError, ValueError):
+        print(f"\n[BLOQUEADO] El lock remoto de '{world_name}' no es válido.")
+        print("    La subida fue bloqueada porque no se puede determinar quién está hosteando.")
+        return False
+    
+    # Caso 1: No hay lock activo
+    #         Se permite el push
+    if world_lock is None:
+        return True
+    
+    # Caso 2: Hay lock activo y pertenece al jugador actual. 
+    #         Se permite el push
+    if world_lock["player"] == player:
+        if announce_own:
+            print(f"\n[INFO] El lock activo de '{world_name}' te pertenece.")
+        return True
+    
+    # Caso 3: Hay lock activo pero no pertenece al jugador actual. 
+    #         Se bloquea el push
+    expiration = parse_iso_datetime(world_lock["expires_at"])
+    print(f"\n[BLOQUEADO] '{world_name}' está siendo usado por otro jugador.")
+    print(f"    Jugador: {world_lock['player']} ({world_lock['machine']})")
+    print(f"    El lock vence: {expiration:%Y-%m-%d %H:%M} UTC")
+    print("    La publicación normal fue bloqueada para proteger su sesión.")
+    return False
 
 
 def pull_menu(settings: Settings, storage: R2Storage) -> None:

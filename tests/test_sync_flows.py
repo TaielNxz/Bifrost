@@ -33,6 +33,19 @@ class FakeStorage:
         return None
 
 
+class LockStorage(FakeStorage):
+    def __init__(self, manifest, world_lock) -> None:
+        super().__init__(manifest)
+        self.world_lock = world_lock
+
+    def read_lock(self, world_name):
+        return self.world_lock
+
+    def delete_lock(self, world_name):
+        self.events.append("unlock")
+        self.world_lock = None
+
+
 class SyncFlowTests(unittest.TestCase):
     def test_push_publishes_zip_before_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -168,6 +181,111 @@ class SyncFlowTests(unittest.TestCase):
                 push_menu(settings, storage)  # type: ignore[arg-type]
 
             self.assertEqual(storage.events, [])
+
+    def test_push_blocks_foreign_active_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            world = root / "Asgard"
+            world.mkdir()
+            (world / "save.db2").write_bytes(b"local progress")
+            remote_manifest = {
+                "version": 10,
+                "world": "Asgard",
+                "filename": "worlds/Asgard/current/world.zip",
+                "size": 100,
+                "sha256": "a" * 64,
+                "uploaded_by": "Lucas",
+                "uploaded_at": "2020-01-01T00:00:00Z",
+            }
+            world_lock = {
+                "player": "Lucas",
+                "machine": "PC-LUCAS",
+                "acquired_at": "2099-01-01T00:00:00Z",
+                "expires_at": "2099-01-01T12:00:00Z",
+            }
+            save_base_version(root, "Asgard", 10, "a" * 64)
+            settings = Settings("url", "id", "secret", "bucket", root, "Taiel")
+            storage = LockStorage(remote_manifest, world_lock)
+            output = io.StringIO()
+
+            with redirect_stdout(output), patch("builtins.input", side_effect=["1", "s"]):
+                push_menu(settings, storage)  # type: ignore[arg-type]
+
+            self.assertEqual(storage.events, [])
+            self.assertIn("está siendo usado por otro jugador", output.getvalue())
+            self.assertIn("Lucas (PC-LUCAS)", output.getvalue())
+
+    def test_push_with_own_lock_succeeds_and_releases_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            world = root / "Asgard"
+            world.mkdir()
+            (world / "save.db2").write_bytes(b"local progress")
+            remote_manifest = {
+                "version": 10,
+                "world": "Asgard",
+                "filename": "worlds/Asgard/current/world.zip",
+                "size": 100,
+                "sha256": "a" * 64,
+                "uploaded_by": "Taiel",
+                "uploaded_at": "2020-01-01T00:00:00Z",
+            }
+            world_lock = {
+                "player": "Taiel",
+                "machine": "PC-TAIEL",
+                "acquired_at": "2099-01-01T00:00:00Z",
+                "expires_at": "2099-01-01T12:00:00Z",
+            }
+            save_base_version(root, "Asgard", 10, "a" * 64)
+            settings = Settings("url", "id", "secret", "bucket", root, "Taiel")
+            storage = LockStorage(remote_manifest, world_lock)
+
+            with patch("builtins.input", side_effect=["1", "s"]):
+                push_menu(settings, storage)  # type: ignore[arg-type]
+
+            self.assertEqual(storage.events, ["zip", "manifest", "unlock"])
+            self.assertIsNone(storage.world_lock)
+
+    def test_push_rechecks_lock_before_upload(self) -> None:
+        class ChangingLockStorage(FakeStorage):
+            def __init__(self, manifest) -> None:
+                super().__init__(manifest)
+                self.lock_reads = 0
+
+            def read_lock(self, world_name):
+                self.lock_reads += 1
+                if self.lock_reads == 1:
+                    return None
+                return {
+                    "player": "Lucas",
+                    "machine": "PC-LUCAS",
+                    "acquired_at": "2099-01-01T00:00:00Z",
+                    "expires_at": "2099-01-01T12:00:00Z",
+                }
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            world = root / "Asgard"
+            world.mkdir()
+            (world / "save.db2").write_bytes(b"local progress")
+            remote_manifest = {
+                "version": 10,
+                "world": "Asgard",
+                "filename": "worlds/Asgard/current/world.zip",
+                "size": 100,
+                "sha256": "a" * 64,
+                "uploaded_by": "Taiel",
+                "uploaded_at": "2020-01-01T00:00:00Z",
+            }
+            save_base_version(root, "Asgard", 10, "a" * 64)
+            settings = Settings("url", "id", "secret", "bucket", root, "Taiel")
+            storage = ChangingLockStorage(remote_manifest)
+
+            with patch("builtins.input", side_effect=["1", "s"]):
+                push_menu(settings, storage)  # type: ignore[arg-type]
+
+            self.assertEqual(storage.events, [])
+            self.assertEqual(storage.lock_reads, 2)
 
     def test_pull_list_displays_manifest_size_in_readable_format(self) -> None:
         class PullStorage:

@@ -50,7 +50,7 @@ worlds/<nombre>/current/world.zip
 worlds/<nombre>/backups/<fecha>.zip  # reservada; flujo no implementado
 ```
 
-El manifest contiene `version`, `world`, `filename`, `size`, `sha256`, `uploaded_by` y `uploaded_at` UTC. Push asigna `1` o `version + 1`, sube primero el ZIP y publica el manifest al final. Después libera solamente un lock propio.
+El manifest contiene `version`, `world`, `filename`, `size`, `sha256`, `uploaded_by` y `uploaded_at` UTC. Push asigna `1` o `version + 1`, valida el lock antes de preparar y antes de transferir, sube primero el ZIP y publica el manifest al final. Un lock ajeno o inválido bloquea la publicación; después de un push exitoso se libera solamente un lock propio.
 
 `.bifrost-state.json` vive directamente en `VALHEIM_WORLDS_PATH` y registra versión/hash base tras cada pull o push exitoso. Si existe un manifest remoto, el push exige una base local coincidente y se bloquea ante ausencia o discrepancia. El archivo no pertenece a ningún mundo ni se incluye en ZIP/R2.
 
@@ -64,6 +64,7 @@ Pull compara frescura, exige confirmación para forzar un lock ajeno y adquiere 
 
 - Nunca publiques el manifest antes de completar el ZIP correspondiente.
 - Nunca publiques sobre un manifest que no coincida con la versión y hash base locales.
+- Nunca publiques mientras exista un lock ajeno activo o no se pueda interpretar el lock.
 - Nunca aceptes un ZIP cuyo SHA-256 no coincida.
 - No sobrescribas progreso más nuevo ni un lock ajeno sin confirmación explícita.
 - Todo reemplazo local debe ser recuperable y prepararse fuera de la carpeta activa.
@@ -74,7 +75,7 @@ Pull compara frescura, exige confirmación para forzar un lock ajeno y adquiere 
 
 ## Limitaciones conocidas
 
-- Push no comprueba ni adquiere el lock antes de sobrescribir el remoto.
+- La validación del lock durante push reduce carreras, pero no es atómica con la escritura remota; el lock todavía puede cambiar entre la última comprobación y la publicación.
 - La advertencia secundaria de frescura usa el `mtime` de la carpeta raíz, que puede no representar el archivo más reciente; el control autoritativo de conflictos usa versión y hash base.
 - Los backups remotos todavía no se crean ni restauran.
 - La subida no verifica posteriormente el objeto remoto.

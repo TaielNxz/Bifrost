@@ -13,6 +13,8 @@ La clave de backups está reservada; el flujo actual todavía no publica backups
 
 En un push se sube primero `current/world.zip` y luego `manifest.json`. El manifest es el puntero oficial a la versión vigente y contiene versión, mundo, clave del ZIP, tamaño, SHA-256, autor y fecha UTC.
 
+El push consulta el lock antes de preparar la publicación y otra vez inmediatamente antes de transferir. Un lock ajeno activo o inválido bloquea la operación. Un lock propio permite publicar y se libera después del éxito; la ausencia de lock también permite continuar.
+
 Un lock contiene jugador, máquina, fecha de adquisición y vencimiento. Su duración actual es de 12 horas.
 
 ## Versión base local
