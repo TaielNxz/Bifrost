@@ -13,6 +13,7 @@ class World:
 
     @property
     def size_mb(self) -> float:
+        """Devuelve el tamaño del mundo expresado en megabytes."""
         return round(self.size_bytes / (1024 * 1024), 2)
 
 

@@ -16,6 +16,7 @@ class Settings:
     player_name: str
 
     def validate_r2(self) -> None:
+        """Verifica que todas las variables necesarias para acceder a R2 existan."""
         missing = [
             name
             for name, value in (
@@ -30,6 +31,7 @@ class Settings:
             raise RuntimeError(f"Faltan variables de R2 en .env: {', '.join(missing)}")
 
     def validate_worlds_path(self) -> None:
+        """Verifica que la ruta configurada para los mundos locales sea válida."""
         if not self.worlds_path.is_dir():
             raise RuntimeError(
                 "La carpeta de mundos no existe:\n"
@@ -39,6 +41,7 @@ class Settings:
 
 
 def load_settings(env_file: str | os.PathLike[str] | None = None) -> Settings:
+    """Carga la configuración desde el entorno y un archivo `.env` opcional."""
     load_dotenv(dotenv_path=env_file)
     raw_path = os.getenv("VALHEIM_WORLDS_PATH", "")
     expanded_path = os.path.expandvars(os.path.expanduser(raw_path))

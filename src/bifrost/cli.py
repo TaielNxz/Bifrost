@@ -17,10 +17,12 @@ T = TypeVar("T")
 
 
 def confirm(question: str) -> bool:
-    return input(f"{question} [s/N]: ").strip().lower() == "s"
+    """Pregunta al usuario y devuelve True si responde 's' (sí)."""
+    return input(f"{question} [s/n]: ").strip().lower() == "s"
 
 
 def choose(items: Sequence[T], formatter: Callable[[T], str], prompt: str = "Elegí un mundo") -> T | None:
+    """Muestra una lista de items y devuelve el elegido por el usuario, o None si cancela."""
     for index, item in enumerate(items, 1):
         print(f"  {index}) {formatter(item)}")
     print("  0) Volver")
@@ -38,6 +40,7 @@ def choose(items: Sequence[T], formatter: Callable[[T], str], prompt: str = "Ele
 
 
 def show_comparison(world: World, manifest: Manifest) -> tuple[datetime, datetime]:
+    """Muestra la comparación entre la versión remota y la local de un mundo."""
     remote_date = parse_iso_datetime(manifest["uploaded_at"])
     local_date = world.modified_at.astimezone()
     print("\n[INFO] Comparando versiones...")
@@ -51,6 +54,7 @@ def show_comparison(world: World, manifest: Manifest) -> tuple[datetime, datetim
 
 
 def allow_push(world: World, remote_manifest: Manifest | None) -> bool:
+    """Devuelve True si se permite subir el mundo, o False si se cancela."""
     if remote_manifest is None:
         print(f"\n[INFO] No hay versión previa de '{world.name}' en la nube.")
         return True
@@ -64,6 +68,7 @@ def allow_push(world: World, remote_manifest: Manifest | None) -> bool:
 
 
 def allow_pull(settings: Settings, world_name: str, manifest: Manifest) -> bool:
+    """Devuelve True si se permite descargar el mundo, o False si se cancela."""
     local_world = find_world(settings.worlds_path, world_name)
     if local_world is None:
         print(f"\n[INFO] No tenés '{world_name}' localmente. Se va a crear.")
@@ -78,6 +83,7 @@ def allow_pull(settings: Settings, world_name: str, manifest: Manifest) -> bool:
 
 
 def push_menu(settings: Settings, storage: R2Storage) -> None:
+    """Sube un mundo local a la nube, reemplazando la versión remota si existe."""
     print("\n=== Subir un mundo ===\n")
     worlds = list_worlds(settings.worlds_path)
     if not worlds:
@@ -115,6 +121,7 @@ def push_menu(settings: Settings, storage: R2Storage) -> None:
 
 
 def _allow_lock_override(storage: R2Storage, world_name: str, player: str) -> bool:
+    """Devuelve True si se permite forzar el lock, o False si se cancela."""
     world_lock = active_lock(storage, world_name)
     if world_lock is None:
         return True
@@ -131,6 +138,7 @@ def _allow_lock_override(storage: R2Storage, world_name: str, player: str) -> bo
 
 
 def pull_menu(settings: Settings, storage: R2Storage) -> None:
+    """Descarga un mundo de la nube y reemplaza la versión local si existe."""
     print("\n=== Descargar un mundo ===\n")
     remote_worlds = []
     for name in storage.list_worlds():
@@ -181,6 +189,7 @@ def pull_menu(settings: Settings, storage: R2Storage) -> None:
 
 
 def lock_menu(settings: Settings, storage: R2Storage) -> None:
+    """Muestra el estado de los locks y permite liberar uno propio."""
     print("\n=== Estado del lock ===\n")
     lock_info = [(name, active_lock(storage, name)) for name in storage.list_worlds()]
     if not lock_info:
@@ -188,6 +197,7 @@ def lock_menu(settings: Settings, storage: R2Storage) -> None:
         return
 
     def format_lock(item: tuple[str, object]) -> str:
+        """Formatea un mundo y el estado de su lock para el menú."""
         name, world_lock = item
         if world_lock is None:
             return f"{name:<15} (libre)"
@@ -212,6 +222,7 @@ def lock_menu(settings: Settings, storage: R2Storage) -> None:
 
 
 def run_menu(settings: Settings, storage: R2Storage) -> None:
+    """Muestra el menú principal y ejecuta la opción elegida por el usuario."""
     while True:
         print("\n=== Bifröst ===")
         print("  1) Subir un mundo")
@@ -233,6 +244,7 @@ def run_menu(settings: Settings, storage: R2Storage) -> None:
 
 
 def main() -> None:
+    """Carga la configuración e inicia la interfaz interactiva de Bifröst."""
     parser = argparse.ArgumentParser(
         prog="bifrost",
         description="Sincroniza mundos de Valheim mediante Cloudflare R2.",

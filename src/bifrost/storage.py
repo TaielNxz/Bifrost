@@ -14,6 +14,7 @@ from .paths import WORLDS_PREFIX, lock_key, manifest_key
 
 class R2Storage:
     def __init__(self, settings: Settings, client: Any | None = None) -> None:
+        """Inicializa el acceso a R2 con un cliente provisto o uno nuevo de boto3."""
         settings.validate_r2()
         self.bucket = settings.r2_bucket
         self.client = client or boto3.client(
@@ -26,10 +27,12 @@ class R2Storage:
 
     @staticmethod
     def _is_not_found(error: ClientError) -> bool:
+        """Indica si un error S3 representa un objeto inexistente."""
         code = str(error.response.get("Error", {}).get("Code", ""))
         return code in {"404", "NoSuchKey", "NotFound"}
 
     def get_json(self, key: str) -> dict[str, Any] | None:
+        """Lee un objeto JSON o devuelve None cuando la clave no existe."""
         try:
             response = self.client.get_object(Bucket=self.bucket, Key=key)
         except ClientError as error:
@@ -39,6 +42,7 @@ class R2Storage:
         return json.loads(response["Body"].read().decode("utf-8"))
 
     def put_json(self, key: str, value: dict[str, Any]) -> None:
+        """Serializa y guarda un diccionario como objeto JSON en R2."""
         self.client.put_object(
             Bucket=self.bucket,
             Key=key,
@@ -47,36 +51,45 @@ class R2Storage:
         )
 
     def delete(self, key: str) -> None:
+        """Elimina de R2 el objeto correspondiente a una clave."""
         self.client.delete_object(Bucket=self.bucket, Key=key)
 
     def upload_file(self, local_path: str | os.PathLike[str], key: str) -> None:
+        """Sube un archivo local a la clave remota indicada."""
         with Path(local_path).open("rb") as file:
             self.client.upload_fileobj(file, self.bucket, key)
 
     def download_file(self, key: str, destination: str | os.PathLike[str]) -> Path:
+        """Descarga un objeto remoto y devuelve su ruta local de destino."""
         path = Path(destination)
         with path.open("wb") as file:
             self.client.download_fileobj(self.bucket, key, file)
         return path
 
     def read_manifest(self, world_name: str) -> Manifest | None:
+        """Lee el manifest remoto de un mundo si existe."""
         value = self.get_json(manifest_key(world_name))
         return value  # type: ignore[return-value]
 
     def write_manifest(self, world_name: str, manifest: Manifest) -> None:
+        """Publica el manifest remoto de un mundo."""
         self.put_json(manifest_key(world_name), manifest)
 
     def read_lock(self, world_name: str) -> WorldLock | None:
+        """Lee el lock remoto de un mundo si existe."""
         value = self.get_json(lock_key(world_name))
         return value  # type: ignore[return-value]
 
     def write_lock(self, world_name: str, world_lock: WorldLock) -> None:
+        """Guarda el lock remoto de un mundo."""
         self.put_json(lock_key(world_name), world_lock)
 
     def delete_lock(self, world_name: str) -> None:
+        """Elimina el lock remoto de un mundo."""
         self.delete(lock_key(world_name))
 
     def list_worlds(self) -> list[str]:
+        """Lista alfabéticamente los mundos presentes bajo el prefijo remoto."""
         response = self.client.list_objects_v2(
             Bucket=self.bucket, Prefix=f"{WORLDS_PREFIX}/", Delimiter="/"
         )

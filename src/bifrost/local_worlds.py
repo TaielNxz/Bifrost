@@ -7,10 +7,12 @@ from .models import World
 
 
 def is_backup(name: str) -> bool:
+    """Indica si el nombre corresponde a una carpeta de backup local."""
     return "_backup_" in name or "_pre_pull_" in name
 
 
 def directory_size(directory: str | os.PathLike[str]) -> int:
+    """Calcula en bytes el tamaño acumulado de los archivos de una carpeta."""
     total = 0
     for current_dir, _, files in os.walk(directory):
         for filename in files:
@@ -22,6 +24,7 @@ def directory_size(directory: str | os.PathLike[str]) -> int:
 
 
 def list_worlds(worlds_path: str | os.PathLike[str]) -> list[World]:
+    """Lista los mundos locales, omitiendo las carpetas identificadas como backups."""
     root = Path(worlds_path)
     if not root.is_dir():
         raise RuntimeError(f"La carpeta de mundos no existe:\n  {root}")
@@ -40,10 +43,12 @@ def list_worlds(worlds_path: str | os.PathLike[str]) -> list[World]:
 
 
 def find_world(worlds_path: str | os.PathLike[str], name: str) -> World | None:
+    """Busca un mundo local por nombre sin distinguir mayúsculas de minúsculas."""
     return next((world for world in list_worlds(worlds_path) if world.name.lower() == name.lower()), None)
 
 
 def backup_world(worlds_path: str | os.PathLike[str], name: str) -> Path | None:
+    """Mueve un mundo local a una carpeta de backup con fecha y devuelve su ruta."""
     world = find_world(worlds_path, name)
     if world is None:
         return None

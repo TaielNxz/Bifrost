@@ -9,6 +9,7 @@ LOCK_DURATION_HOURS = 12
 
 
 def is_expired(world_lock: WorldLock, now: datetime | None = None) -> bool:
+    """Indica si un lock ya superó su fecha de vencimiento."""
     current_time = now or datetime.now(timezone.utc)
     return current_time > parse_iso_datetime(world_lock["expires_at"])
 
@@ -19,6 +20,7 @@ def build_lock(
     now: datetime | None = None,
     duration_hours: int = LOCK_DURATION_HOURS,
 ) -> WorldLock:
+    """Construye un lock para un jugador con una duración determinada."""
     acquired_at = now or datetime.now(timezone.utc)
     expires_at = acquired_at + timedelta(hours=duration_hours)
     return {
@@ -30,6 +32,7 @@ def build_lock(
 
 
 def active_lock(storage: R2Storage, world_name: str) -> WorldLock | None:
+    """Obtiene el lock activo de un mundo o devuelve None si no existe o expiró."""
     world_lock = storage.read_lock(world_name)
     if world_lock is None or is_expired(world_lock):
         return None
@@ -37,11 +40,13 @@ def active_lock(storage: R2Storage, world_name: str) -> WorldLock | None:
 
 
 def acquire_lock(storage: R2Storage, world_name: str, player: str) -> WorldLock:
+    """Crea y guarda un nuevo lock remoto para el jugador indicado."""
     world_lock = build_lock(player)
     storage.write_lock(world_name, world_lock)
     return world_lock
 
 
 def release_lock(storage: R2Storage, world_name: str) -> None:
+    """Elimina el lock remoto de un mundo."""
     storage.delete_lock(world_name)
 

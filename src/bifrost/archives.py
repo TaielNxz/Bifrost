@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 def calculate_sha256(file_path: str | os.PathLike[str], block_size: int = 1024 * 1024) -> str:
+    """Calcula el hash SHA256 de un archivo."""
     digest = hashlib.sha256()
     with Path(file_path).open("rb") as file:
         while block := file.read(block_size):
@@ -13,6 +14,7 @@ def calculate_sha256(file_path: str | os.PathLike[str], block_size: int = 1024 *
 
 
 def create_zip(source_dir: str | os.PathLike[str], destination: str | os.PathLike[str]) -> Path:
+    """Crea un archivo ZIP desde una carpeta, sobrescribiendo el destino si ya existe."""
     source = Path(source_dir)
     destination_path = Path(destination)
     if not source.is_dir():
@@ -27,6 +29,7 @@ def create_zip(source_dir: str | os.PathLike[str], destination: str | os.PathLik
 
 
 def verify_zip(file_path: str | os.PathLike[str], expected_sha256: str) -> bool:
+    """Verifica que el archivo ZIP tenga el hash SHA256 esperado."""
     return calculate_sha256(file_path) == expected_sha256
 
 
