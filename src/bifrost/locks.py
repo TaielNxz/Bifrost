@@ -22,7 +22,8 @@ def build_lock(
     session_id: str | None = None,
     base_version: int | None = None,
 ) -> WorldLock:
-    """Construye un lock para un jugador con una duración determinada."""
+    """Construye un lock con jugador, sesión y vencimiento, sin guardarlo remotamente."""
+    # Calcula el vencimiento desde la fecha elegida; por defecto usa la hora UTC actual.
     acquired_at = now or datetime.now(timezone.utc)
     expires_at = acquired_at + timedelta(hours=duration_hours)
     world_lock: WorldLock = {
@@ -32,6 +33,7 @@ def build_lock(
         "expires_at": expires_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "session_id": session_id or uuid.uuid4().hex,
     }
+    # Vincula el lock a una versión base solo cuando se indicó una.
     if base_version is not None:
         world_lock["base_version"] = base_version
     return world_lock

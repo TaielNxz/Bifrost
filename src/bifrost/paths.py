@@ -7,17 +7,17 @@ def state_key(world_name: str) -> str:
 
 
 def manifest_key(world_name: str) -> str:
-    """Construye la clave remota del manifest de un mundo."""
+    """Construye la clave del manifest heredado, usado cuando no existe estado canónico."""
     return f"{WORLDS_PREFIX}/{world_name}/manifest.json"
 
 
 def lock_key(world_name: str) -> str:
-    """Construye la clave remota del lock de un mundo."""
+    """Construye la clave del lock heredado, usado cuando no existe estado canónico."""
     return f"{WORLDS_PREFIX}/{world_name}/lock.json"
 
 
 def current_zip_key(world_name: str) -> str:
-    """Construye la clave remota del ZIP vigente de un mundo."""
+    """Construye la clave heredada del ZIP vigente, anterior al uso de claves versionadas."""
     return f"{WORLDS_PREFIX}/{world_name}/current/world.zip"
 
 
@@ -37,7 +37,7 @@ def version_zip_key(world_name: str, version: int) -> str:
 
 
 def version_upload_zip_key(world_name: str, version: int, upload_id: str) -> str:
-    """Construye una clave inmutable y única para un ZIP candidato."""
+    """Construye la clave de un ZIP versionado, diferenciada por identificador de subida."""
     return f"{version_prefix(world_name, version)}/{upload_id}/world.zip"
 
 
@@ -47,7 +47,7 @@ def version_manifest_key(world_name: str, version: int) -> str:
 
 
 def backup_key(world_name: str, date: str) -> str:
-    """Construye la clave remota de un backup fechado de un mundo."""
+    """Construye la clave reservada para un backup remoto fechado, sin crearlo."""
     return f"{WORLDS_PREFIX}/{world_name}/backups/{date}.zip"
 
 

@@ -9,7 +9,7 @@ from .paths import current_zip_key
 
 
 def parse_iso_datetime(value: str) -> datetime:
-    """Convierte una fecha ISO 8601, incluida la terminación Z, a datetime."""
+    """Interpreta una fecha ISO 8601, admitiendo la terminación Z para UTC."""
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
@@ -20,8 +20,12 @@ def build_manifest(
     uploaded_by: str,
     filename: str | None = None,
 ) -> Manifest:
-    """Construye el manifest de una versión local lista para publicar."""
+    """Construye el manifest de un ZIP con tamaño, SHA-256, autor y fecha UTC.
+
+    No publica el ZIP ni el manifest.
+    """
     path = Path(zip_path)
+    # Calcula la metadata desde el ZIP terminado; la clave heredada es el destino por defecto.
     return {
         "version": version,
         "world": world_name,
@@ -41,5 +45,5 @@ def save_manifest(manifest: Manifest, destination: str | os.PathLike[str]) -> Pa
 
 
 def next_version(remote_manifest: Manifest | None) -> int:
-    """Calcula el siguiente número de versión a partir del manifest remoto."""
+    """Devuelve la versión siguiente a la remota, o 1 si no hay una publicación previa."""
     return 1 if remote_manifest is None else remote_manifest["version"] + 1

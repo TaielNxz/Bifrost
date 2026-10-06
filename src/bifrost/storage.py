@@ -17,8 +17,15 @@ class ConcurrentUpdateError(RuntimeError):
 
 
 class R2Storage:
+    """Ofrece operaciones S3 sobre el bucket R2 configurado para Bifröst."""
+
+    # ======================================================================================= #
+    # Inicialización y errores
+    # ======================================================================================= #
+
     def __init__(self, settings: Settings, client: Any | None = None) -> None:
         """Inicializa el acceso a R2 con un cliente provisto o uno nuevo de boto3."""
+        # Comprueba la configuración antes de usar un cliente o construir uno nuevo.
         settings.validate_r2()
         self.bucket = settings.r2_bucket
         self.client = client or boto3.client(
@@ -35,11 +42,16 @@ class R2Storage:
         code = str(error.response.get("Error", {}).get("Code", ""))
         return code in {"404", "NoSuchKey", "NotFound"}
 
+    # ======================================================================================= #
+    # Lectura y escritura de JSON
+    # ======================================================================================= #
+
     def get_json(self, key: str) -> dict[str, Any] | None:
         """Lee un objeto JSON o devuelve None cuando la clave no existe."""
         try:
             response = self.client.get_object(Bucket=self.bucket, Key=key)
         except ClientError as error:
+            # Objeto ausente: devuelve None; los demás errores S3 se propagan.
             if self._is_not_found(error):
                 return None
             raise
@@ -50,9 +62,11 @@ class R2Storage:
         try:
             response = self.client.get_object(Bucket=self.bucket, Key=key)
         except ClientError as error:
+            # Objeto ausente: no hay JSON ni ETag; los demás errores S3 se propagan.
             if self._is_not_found(error):
                 return None, None
             raise
+        # Conserva el ETag de la misma lectura para una futura escritura condicional.
         value = json.loads(response["Body"].read().decode("utf-8"))
         return value, response["ETag"]
 
@@ -68,7 +82,12 @@ class R2Storage:
     def put_json_conditional(
         self, key: str, value: dict[str, Any], expected_etag: str | None
     ) -> str:
-        """Escribe un JSON solo si el objeto conserva el ETag esperado."""
+        """Guarda un JSON con el ETag esperado; si no hay ETag, exige que el objeto no exista.
+
+        Devuelve el nuevo ETag y señala un conflicto si falla la precondición.
+        """
+        # Caso 1: No hay ETag esperado; exige que el objeto todavía no exista.
+        # Caso 2: Hay ETag esperado; exige que coincida con el objeto vigente.
         condition = {"IfNoneMatch": "*"} if expected_etag is None else {"IfMatch": expected_etag}
         try:
             response = self.client.put_object(
@@ -82,9 +101,14 @@ class R2Storage:
             code = str(error.response.get("Error", {}).get("Code", ""))
             status = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
             if code in {"PreconditionFailed", "412"} or status == 412:
+                # Conflicto: distingue una precondición fallida de otros errores S3.
                 raise ConcurrentUpdateError("El estado remoto cambió durante la operación.") from error
             raise
         return response["ETag"]
+
+    # ======================================================================================= #
+    # Operaciones con objetos y archivos
+    # ======================================================================================= #
 
     def delete(self, key: str) -> None:
         """Elimina de R2 el objeto correspondiente a una clave."""
@@ -102,6 +126,7 @@ class R2Storage:
         """Lista todas las claves existentes bajo un prefijo, incluida la paginación."""
         paginator = self.client.get_paginator("list_objects_v2")
         pages = paginator.paginate(Bucket=self.bucket, Prefix=prefix)
+        # Reúne las claves de todas las páginas; una página sin objetos no agrega resultados.
         return [item["Key"] for page in pages for item in page.get("Contents", [])]
 
     def upload_file(self, local_path: str | os.PathLike[str], key: str) -> None:
@@ -110,24 +135,32 @@ class R2Storage:
             self.client.upload_fileobj(file, self.bucket, key)
 
     def download_file(self, key: str, destination: str | os.PathLike[str]) -> Path:
-        """Descarga un objeto remoto y devuelve su ruta local de destino."""
+        """Descarga un objeto a un archivo local, reemplazando su contenido si existe.
+
+        Devuelve la ruta de destino; la verificación de integridad corresponde al llamador.
+        """
         path = Path(destination)
         with path.open("wb") as file:
             self.client.download_fileobj(self.bucket, key, file)
         return path
 
+    # ======================================================================================= #
+    # Consulta de mundos y metadata heredada
+    # ======================================================================================= #
+
     def read_manifest(self, world_name: str) -> Manifest | None:
-        """Lee el manifest remoto de un mundo si existe."""
+        """Lee el manifest heredado de un mundo, o devuelve None si no existe."""
         value = self.get_json(manifest_key(world_name))
         return value  # type: ignore[return-value]
 
     def read_lock(self, world_name: str) -> WorldLock | None:
-        """Lee el lock remoto de un mundo si existe."""
+        """Lee el lock heredado de un mundo, o devuelve None si no existe."""
         value = self.get_json(lock_key(world_name))
         return value  # type: ignore[return-value]
 
     def list_worlds(self) -> list[str]:
         """Lista alfabéticamente los mundos presentes bajo el prefijo remoto."""
+        # Usa el delimitador para consultar prefijos de mundos sin listar sus archivos.
         response = self.client.list_objects_v2(
             Bucket=self.bucket, Prefix=f"{WORLDS_PREFIX}/", Delimiter="/"
         )

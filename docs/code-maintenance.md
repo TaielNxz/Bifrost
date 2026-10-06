@@ -20,6 +20,7 @@ Procedimiento para optimización, refactorización, organización, pruebas y doc
 
 - Preferí la solución más simple que resuelva el problema concreto. No prepares extensiones hipotéticas ni agregues capas, clases o dependencias sin una necesidad demostrable.
 - Separá UI, dominio, filesystem y R2 según `AGENTS.md`. Evitá acoplamientos circulares y efectos al importar módulos.
+- Agregá secciones solo si distinguen grupos útiles de responsabilidades. Los archivos pequeños con un propósito claro pueden organizarse sin separadores; aplicá el criterio de la guía de documentación.
 - Extraé helpers cuando den nombre a una responsabilidad clara o eliminen duplicación significativa. No fragmentes una secuencia legible en funciones que obliguen a saltar continuamente entre archivos.
 - Unificá bloques similares solo si comparten reglas y efectos; el parecido sintáctico no alcanza. Una abstracción no debe ocultar diferencias de confirmación, locks o persistencia.
 - Al reordenar o extraer código, conservá el orden de efectos y el comportamiento ante cancelaciones, fallos y concurrencia. Revisá contratos, llamadores y referencias a los nombres modificados.

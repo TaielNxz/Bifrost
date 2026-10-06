@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 
 @dataclass(frozen=True)
 class Settings:
+    """Reúne la configuración de R2, la carpeta de mundos y el nombre del jugador."""
+
     r2_endpoint: str
     r2_access_key_id: str
     r2_secret_access_key: str
@@ -16,7 +18,11 @@ class Settings:
     player_name: str
 
     def validate_r2(self) -> None:
-        """Verifica que todas las variables necesarias para acceder a R2 existan."""
+        """Comprueba que la configuración requerida de R2 tenga valores.
+
+        No verifica credenciales ni conectividad remota.
+        """
+        # Identifica variables faltantes sin incluir sus valores en el error.
         missing = [
             name
             for name, value in (
@@ -31,7 +37,7 @@ class Settings:
             raise RuntimeError(f"Faltan variables de R2 en .env: {', '.join(missing)}")
 
     def validate_worlds_path(self) -> None:
-        """Verifica que la ruta configurada para los mundos locales sea válida."""
+        """Comprueba que la ruta configurada para los mundos sea una carpeta existente."""
         if not self.worlds_path.is_dir():
             raise RuntimeError(
                 "La carpeta de mundos no existe:\n"
@@ -41,10 +47,15 @@ class Settings:
 
 
 def load_settings(env_file: str | os.PathLike[str] | None = None) -> Settings:
-    """Carga la configuración desde el entorno y un archivo `.env` opcional."""
+    """Carga la configuración desde el entorno y .env, expandiendo la ruta de mundos.
+
+    Usa el hostname cuando no se configuró un nombre de jugador.
+    """
     load_dotenv(dotenv_path=env_file)
+    # Expande ~ y variables de entorno, incluido %USERPROFILE% en Windows.
     raw_path = os.getenv("VALHEIM_WORLDS_PATH", "")
     expanded_path = os.path.expandvars(os.path.expanduser(raw_path))
+    # Mantiene una ruta inválida reconocible cuando falta la configuración de mundos.
     return Settings(
         r2_endpoint=os.getenv("R2_ENDPOINT", ""),
         r2_access_key_id=os.getenv("R2_ACCESS_KEY_ID", ""),

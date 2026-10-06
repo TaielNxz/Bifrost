@@ -52,7 +52,9 @@ Comentá bloques significativos, decisiones y motivos. Preferí una línea breve
 
 ## Secciones y ubicación
 
-Agrupá por responsabilidad y usá nombres concretos. Conservá separadores uniformes de tres líneas:
+Las secciones son opcionales. Usalas cuando haya grupos de funciones con responsabilidades distintas y los separadores faciliten la lectura. Un archivo pequeño que encapsula una responsabilidad clara, generalmente expresada en su nombre, puede no necesitar ninguna sección. No agregues separadores para envolver todo el archivo ni para cada función.
+
+Cuando correspondan, agrupá por responsabilidad, usá nombres concretos y conservá separadores uniformes de tres líneas:
 
 ```python
 # ======================================================================================= #
