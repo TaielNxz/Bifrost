@@ -1,39 +1,82 @@
 # Bifröst
 
-Bifröst sincroniza mundos de Valheim entre jugadores mediante Cloudflare R2. Permite descargar la versión compartida antes de hostear, conservar un backup local y publicar el progreso al terminar.
+## 1. ¿Qué es y cómo se usa?
 
-Cada descarga registra la versión base local. Si otra persona publica una versión nueva antes de tu push, Bifröst bloquea la subida desactualizada para evitar que se pierda progreso.
+Bifröst permite compartir un mundo de Valheim entre amigos para que cualquiera pueda abrir la partida cuando el anfitrión habitual no esté disponible.
 
-La descarga para hostear reemplaza el mundo local de forma recuperable y adquiere su lock. La descarga de copia guarda un ZIP verificado en `.bifrost-copies` sin reemplazar mundos, adquirir locks ni modificar la versión base local.
+El mundo se guarda en un almacenamiento compartido en la nube. Antes de jugar, quien va a abrir la partida descarga el mundo con Bifröst. Al terminar, lo sube para que el siguiente jugador continúe desde ese punto.
 
-Manifest y lock comparten un único `state.json`. Bifröst publica mediante una escritura condicional por ETag: si otro jugador cambia el estado durante un push, R2 rechaza el commit y la versión oficial permanece intacta.
+La rutina es sencilla:
 
-Cada push preserva la versión remota reemplazada en un historial de R2. Se conservan las cinco versiones anteriores más recientes para limitar el uso de almacenamiento.
+1. Elegí **Descargar para hostear** antes de abrir el mundo en Valheim.
+2. Jugá normalmente.
+3. Cerrá el mundo en Valheim y elegí **Subir un mundo** para compartir el progreso.
 
-## Desarrollo
+Bifröst conserva una copia de seguridad antes de reemplazar tu mundo y marca quién lo está usando para ayudar a evitar partidas simultáneas. Si tu copia quedó desactualizada, bloquea la subida para proteger el progreso compartido.
 
-Requiere Python 3.11 o posterior.
+También podés consultar el **Estado de los mundos** o **Descargar una copia**. Esta última opción guarda un ZIP sin reemplazar tu mundo ni reservarlo para jugar.
+
+Coordinen quién va a abrir la partida. Si un mundo aparece en uso, hablá con ese jugador antes de forzar o liberar su bloqueo.
+
+## 2. Descargar, instalar y ejecutar
+
+Los siguientes pasos están pensados para Windows.
+
+### Paso 1: Instalá Python
+
+Necesitás **Python 3.11 o posterior**. Podés descargarlo desde [python.org](https://www.python.org/downloads/).
+
+Durante la instalación, activá la opción **Add Python to PATH**.
+
+### Paso 2: Descargá Bifröst
+
+Dentro del [repositorio de Bifröst](https://github.com/TaielNxz/Bifrost), seleccioná **Code → Download ZIP** y descomprimilo.
+
+Abrí la carpeta descomprimida en una terminal de **PowerShell**.
+
+### Paso 3: Instalá la aplicación
+
+Ejecutá estos comandos, uno por uno:
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"
-Copy-Item .env.example .env
-python -m bifrost
+.\.venv\Scripts\python.exe -m pip install .
+Copy-Item .env-example .env
 ```
 
-Completá `.env` con la ruta local de los mundos y las credenciales de R2. Nunca confirmes ese archivo en Git.
+### Paso 4: Configurá tu acceso
 
-## Pruebas
+Abrí el archivo `.env` con un editor de texto y completá:
+
+- `PLAYER_NAME`: tu nombre de jugador (este nombre se verá en Bifröst, NO es el nombre de tu personaje).
+- `VALHEIM_WORLDS_PATH`: la carpeta donde Valheim guarda tus mundos locales.
+- `R2_ENDPOINT`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` y `R2_BUCKET`: los datos del almacenamiento compartido.
+
+La ruta incluida usa `%USERPROFILE%` para apuntar a tu carpeta de usuario en Windows. Comprobá que corresponda a la ubicación de tu mundo.
+
+Todos los integrantes deben conectarse al mismo almacenamiento. Pedile los datos a quien lo haya configurado; si todavía no existe, consultá [la guía de configuración de R2](docs/r2-setup.md).
+
+El archivo `.env` contiene credenciales: mantenelo privado.
+
+### Paso 5: Ejecutá Bifröst
+
+Desde la carpeta de la aplicación, ejecutá:
 
 ```powershell
-python -m pytest
+.\.venv\Scripts\python.exe -m bifrost
 ```
 
-Las pruebas locales usan directorios temporales y no tocan mundos reales ni R2.
+Vas a encontrar estas opciones:
 
-## Documentación
+```text
+1) Estado de los mundos
+2) Subir un mundo
+3) Descargar para hostear
+4) Descargar una copia
+5) Ver/liberar lock
+6) Salir
+```
 
-- `docs/architecture.md`: responsabilidades y dependencias internas.
-- `docs/protocol.md`: claves, manifests, locks y orden de publicación.
-- `docs/r2-setup.md`: variables necesarias para conectar Cloudflare R2.
+Si el grupo todavía no subió ningún mundo, quien tenga el original debe elegir **Subir un mundo** para compartirlo por primera vez.
+
+Para las siguientes partidas, usá **Descargar para hostear** antes de jugar y **Subir un mundo** al terminar. Para volver a abrir Bifröst otro día, repetí el comando de este paso.
