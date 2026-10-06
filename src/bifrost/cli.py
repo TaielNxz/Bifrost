@@ -108,6 +108,7 @@ def _remote_worlds(storage: R2Storage) -> list[tuple[str, Manifest, StateSnapsho
     for name in storage.list_worlds():
         snapshot = read_world_state(storage, name)
         manifest = snapshot.value["manifest"]
+
         # Omite los mundos sin una versión publicada disponible para descargar.
         if manifest is not None:
             worlds.append((name, manifest, snapshot))
@@ -475,8 +476,9 @@ def pull_menu(settings: Settings, storage: R2Storage) -> None:
     with tempfile.TemporaryDirectory(prefix="bifrost-pull-") as temporary_dir:
         temporary_root = Path(temporary_dir)
         zip_path = storage.download_file(manifest["filename"], temporary_root / "world.zip")
+
+        # Error de integridad: conserva el mundo local y no libera el lock adquirido.
         if not verify_zip(zip_path, manifest["sha256"]):
-            # Error de integridad: conserva el mundo local y no libera el lock adquirido.
             print("\n[ERROR] El ZIP descargado no coincide con el manifest.")
             return
 
@@ -536,8 +538,9 @@ def copy_menu(settings: Settings, storage: R2Storage) -> None:
         zip_path = storage.download_file(
             manifest["filename"], Path(temporary_dir) / "world.zip"
         )
+
+        # Error de integridad: descarta la descarga sin guardar una copia.
         if not verify_zip(zip_path, manifest["sha256"]):
-            # Error de integridad: descarta la descarga sin guardar una copia.
             print("\n[ERROR] El ZIP descargado no coincide con el manifest.")
             return
 

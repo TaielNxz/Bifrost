@@ -106,6 +106,7 @@ def install_staged_world(
         # Error de instalación: intenta recuperar el original si el destino sigue sin existir.
         if backup is not None and not destination.exists():
             shutil.move(str(backup), str(destination))
+
         # Propaga el fallo de instalación aunque se haya podido restaurar el original.
         raise
     return backup
@@ -129,6 +130,7 @@ def save_world_copy(
     # Adapta el nombre a las restricciones de Windows y limita su longitud.
     safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", world_name).strip(" .")
     safe_name = safe_name[:80] or "world"
+
     # Guarda las copias fuera de las carpetas detectadas como mundos activos.
     copies_directory = Path(worlds_path) / COPIES_DIRECTORY_NAME
     copies_directory.mkdir(parents=True, exist_ok=True)

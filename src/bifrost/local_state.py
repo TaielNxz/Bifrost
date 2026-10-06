@@ -30,6 +30,7 @@ def _validate_base(world_name: str, value: object) -> LocalBase:
     version = value.get("version")
     sha256 = value.get("sha256")
     session_id = value.get("session_id")
+
     # Exige una versión positiva y un SHA-256 hexadecimal completo.
     if isinstance(version, bool) or not isinstance(version, int) or version < 1:
         raise RuntimeError(f"La versión base local de '{world_name}' no es válida.")
@@ -39,9 +40,11 @@ def _validate_base(world_name: str, value: object) -> LocalBase:
         or any(character not in "0123456789abcdefABCDEF" for character in sha256)
     ):
         raise RuntimeError(f"El SHA-256 base local de '{world_name}' no es válido.")
+
     # Una sesión ausente es válida; una sesión presente debe tener un identificador no vacío.
     if session_id is not None and (not isinstance(session_id, str) or not session_id):
         raise RuntimeError(f"La sesión local de '{world_name}' no es válida.")
+
     # Normaliza la base sin agregar una sesión que no estaba registrada.
     base: LocalBase = {"version": version, "sha256": sha256.lower()}
     if session_id is not None:
@@ -63,6 +66,7 @@ def _load_state(worlds_path: str | Path) -> dict[str, Any]:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         # Error de lectura: no trata un estado ilegible como si fuera un registro vacío.
         raise RuntimeError(f"No se pudo leer el estado local de Bifröst: {path}") from error
+
     # Comprueba el esquema y la lista de mundos antes de validar cada base individual.
     if not isinstance(value, dict) or value.get("schema_version") != STATE_SCHEMA_VERSION:
         raise RuntimeError(f"El formato del estado local de Bifröst no es válido: {path}")
@@ -107,6 +111,7 @@ def save_base_version(
     base = _validate_base(world_name, value)
     state = _load_state(worlds_path)
     worlds = state["worlds"]
+
     # Reemplaza entradas equivalentes para evitar duplicados por diferencias de mayúsculas.
     for stored_name in list(worlds):
         if stored_name.casefold() == world_name.casefold():

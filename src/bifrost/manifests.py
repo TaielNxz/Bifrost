@@ -25,6 +25,7 @@ def build_manifest(
     No publica el ZIP ni el manifest.
     """
     path = Path(zip_path)
+
     # Calcula la metadata desde el ZIP terminado; la clave heredada es el destino por defecto.
     return {
         "version": version,

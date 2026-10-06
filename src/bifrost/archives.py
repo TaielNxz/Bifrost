@@ -7,6 +7,7 @@ from pathlib import Path
 def calculate_sha256(file_path: str | os.PathLike[str], block_size: int = 1024 * 1024) -> str:
     """Calcula el SHA-256 de un archivo."""
     digest = hashlib.sha256()
+
     # Procesa bloques sucesivos para limitar la memoria utilizada durante el cálculo.
     with Path(file_path).open("rb") as file:
         while block := file.read(block_size):
@@ -21,6 +22,7 @@ def create_zip(source_dir: str | os.PathLike[str], destination: str | os.PathLik
     """
     source = Path(source_dir)
     destination_path = Path(destination)
+
     # Valida el origen antes de crear o reemplazar el ZIP de destino.
     if not source.is_dir():
         raise FileNotFoundError(f"No existe la carpeta a comprimir: {source}")
@@ -49,8 +51,9 @@ def extract_zip(zip_path: str | os.PathLike[str], destination: str | os.PathLike
     with zipfile.ZipFile(zip_path, "r") as archive:
         for member in archive.infolist():
             member_path = (destination_path / member.filename).resolve()
+
+            # Error de ruta: rechaza el ZIP si un miembro escaparía del destino.
             if destination_resolved not in member_path.parents and member_path != destination_resolved:
-                # Error de ruta: rechaza el ZIP si un miembro escaparía del destino.
                 raise ValueError(f"Ruta insegura dentro del ZIP: {member.filename}")
 
         # La extracción comienza solo después de validar el conjunto de rutas.

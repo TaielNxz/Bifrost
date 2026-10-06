@@ -41,6 +41,25 @@ Comentá bloques significativos, decisiones y motivos. Preferí una línea breve
 - Usá etiquetas como `# Cancelación: ...`, `# Conflicto: ...` o `# Error de integridad: ...` cuando aclaren la respuesta del sistema. Un caso de error no implica necesariamente una excepción de Python.
 - Si una etapa contiene decisiones locales importantes, puede tener casos numerados. Ambas formas de comentar pueden coexistir.
 
+### Ubicación y separación de bloques
+
+- Si un comentario describe una rama completa, colocalo inmediatamente antes de `if`, `elif` o `else`, con la misma indentación que ese encabezado. Los comentarios de ramas equivalentes deben quedar al mismo nivel.
+- Si explica una operación interna de la rama, mantenelo dentro de ella, junto a esa operación. No desplaces todos los comentarios de un condicional indiscriminadamente.
+- Separá los bloques lógicos consecutivos con una sola línea vacía, antes del comentario que introduce el siguiente bloque. Conservá juntos el comentario introductorio y su código.
+- No agregues espacios mecánicamente antes de cada comentario ni entre las ramas de una misma decisión. Un comentario interno, el inicio de un bloque o un grupo de comentarios relacionados no necesitan una línea vacía adicional.
+
+Ejemplo de comentarios alineados con las ramas:
+
+```python
+# Caso 2: El ZIP usa la clave heredada mutable; lo copia a la ruta histórica.
+if manifest["filename"] == current_zip_key(world_name):
+    zip_key = version_zip_key(world_name, version)
+    storage.copy(current_zip_key(world_name), zip_key)
+# Caso 3: El ZIP no usa la clave heredada; conserva su ubicación sin copiarlo.
+else:
+    zip_key = manifest["filename"]
+```
+
 ### Precisión y cantidad
 
 - Explicá intención y motivos que el código no hace evidentes: usar temporales, proteger progreso, conservar backups o subir el ZIP antes del commit.

@@ -38,8 +38,8 @@ def archive_current_version(
     if manifest["filename"] == current_zip_key(world_name):
         zip_key = version_zip_key(world_name, version)
         storage.copy(current_zip_key(world_name), zip_key)
+    # Caso 3: El ZIP no usa la clave heredada; conserva la ubicación indicada sin copiarlo.
     else:
-        # Caso 3: El ZIP no usa la clave heredada; conserva la ubicación indicada sin copiarlo.
         zip_key = manifest["filename"]
 
     # Publica el manifest histórico después de preservar el ZIP al que apunta.
@@ -57,6 +57,7 @@ def record_published_version(
     """
     key = version_manifest_key(world_name, manifest["version"])
     existing = storage.get_json(key)
+
     # Conflicto: bloquea el reemplazo de un manifest histórico con otro hash.
     if existing is not None and existing.get("sha256") != manifest["sha256"]:
         raise RuntimeError(
@@ -73,6 +74,7 @@ def _version_from_key(world_name: str, key: str) -> int | None:
     prefix = f"{versions_prefix(world_name)}/"
     if not key.startswith(prefix):
         return None
+
     # Lee solo el primer segmento relativo al historial; el resto identifica sus objetos.
     segment = key[len(prefix) :].partition("/")[0]
     if not segment.isdigit():
@@ -91,6 +93,7 @@ def prune_remote_versions(
     """
     if keep < 1:
         raise ValueError("La cantidad de versiones remotas a conservar debe ser positiva.")
+
     # Agrupa las claves por versión para contar cada versión una sola vez.
     prefix = f"{versions_prefix(world_name)}/"
     keys = storage.list_keys(prefix)
@@ -101,9 +104,11 @@ def prune_remote_versions(
             if (version := _version_from_key(world_name, key)) is not None
         }
     )
+
     # Selecciona las versiones más antiguas que exceden el límite de retención.
     removed = versions[: max(0, len(versions) - keep)]
     removed_set = set(removed)
+
     # Elimina todos sus objetos, incluidos ZIP candidatos y manifests históricos.
     for key in keys:
         if _version_from_key(world_name, key) in removed_set:

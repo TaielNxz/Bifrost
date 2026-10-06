@@ -52,9 +52,11 @@ def load_settings(env_file: str | os.PathLike[str] | None = None) -> Settings:
     Usa el hostname cuando no se configuró un nombre de jugador.
     """
     load_dotenv(dotenv_path=env_file)
+
     # Expande ~ y variables de entorno, incluido %USERPROFILE% en Windows.
     raw_path = os.getenv("VALHEIM_WORLDS_PATH", "")
     expanded_path = os.path.expandvars(os.path.expanduser(raw_path))
+
     # Mantiene una ruta inválida reconocible cuando falta la configuración de mundos.
     return Settings(
         r2_endpoint=os.getenv("R2_ENDPOINT", ""),

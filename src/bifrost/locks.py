@@ -33,6 +33,7 @@ def build_lock(
         "expires_at": expires_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "session_id": session_id or uuid.uuid4().hex,
     }
+
     # Vincula el lock a una versión base solo cuando se indicó una.
     if base_version is not None:
         world_lock["base_version"] = base_version

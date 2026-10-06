@@ -57,14 +57,15 @@ def read_world_state(storage: R2Storage, world_name: str) -> StateSnapshot:
         return StateSnapshot(_validate_state(world_name, value), etag)
 
     # Caso 2: No hay estado canónico disponible; conserva la lectura del protocolo heredado.
+    # Caso 2.1: Hay lectura genérica de JSON; consulta las claves heredadas directamente.
     if hasattr(storage, "get_json"):
-        # Caso 2.1: Hay lectura genérica de JSON; consulta las claves heredadas directamente.
         manifest = cast(Manifest | None, storage.get_json(manifest_key(world_name)))
         world_lock = cast(WorldLock | None, storage.get_json(lock_key(world_name)))
+    # Caso 2.2: Usa los lectores específicos de manifest y lock disponibles.
     else:
-        # Caso 2.2: Usa los lectores específicos de manifest y lock disponibles.
         manifest = storage.read_manifest(world_name)
         world_lock = storage.read_lock(world_name) if hasattr(storage, "read_lock") else None
+
     # Construye una vista inicial; el primer commit condicional creará el estado canónico.
     revision = manifest["version"] if manifest is not None else 0
     legacy_state: WorldState = {

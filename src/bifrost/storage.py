@@ -66,6 +66,7 @@ class R2Storage:
             if self._is_not_found(error):
                 return None, None
             raise
+
         # Conserva el ETag de la misma lectura para una futura escritura condicional.
         value = json.loads(response["Body"].read().decode("utf-8"))
         return value, response["ETag"]
@@ -89,6 +90,7 @@ class R2Storage:
         # Caso 1: No hay ETag esperado; exige que el objeto todavía no exista.
         # Caso 2: Hay ETag esperado; exige que coincida con el objeto vigente.
         condition = {"IfNoneMatch": "*"} if expected_etag is None else {"IfMatch": expected_etag}
+
         try:
             response = self.client.put_object(
                 Bucket=self.bucket,
@@ -100,8 +102,9 @@ class R2Storage:
         except ClientError as error:
             code = str(error.response.get("Error", {}).get("Code", ""))
             status = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+
+            # Conflicto: distingue una precondición fallida de otros errores S3.
             if code in {"PreconditionFailed", "412"} or status == 412:
-                # Conflicto: distingue una precondición fallida de otros errores S3.
                 raise ConcurrentUpdateError("El estado remoto cambió durante la operación.") from error
             raise
         return response["ETag"]
@@ -126,6 +129,7 @@ class R2Storage:
         """Lista todas las claves existentes bajo un prefijo, incluida la paginación."""
         paginator = self.client.get_paginator("list_objects_v2")
         pages = paginator.paginate(Bucket=self.bucket, Prefix=prefix)
+
         # Reúne las claves de todas las páginas; una página sin objetos no agrega resultados.
         return [item["Key"] for page in pages for item in page.get("Contents", [])]
 
