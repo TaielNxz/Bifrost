@@ -1,5 +1,6 @@
 import io
 import tempfile
+import stat
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -96,6 +97,7 @@ class WorldNameMenuTests(unittest.TestCase):
                 entry = Mock(spec=Path)
                 entry.name = name
                 entry.is_dir.return_value = True
+                entry.lstat.return_value = Mock(st_mode=stat.S_IFDIR)
                 entries.append(entry)
             settings = Settings("url", "id", "secret", "bucket", root, "Taiel")
             storage = Mock()
@@ -120,6 +122,7 @@ class WorldNameMenuTests(unittest.TestCase):
                 entry = Mock(spec=Path)
                 entry.name = name
                 entry.is_dir.return_value = True
+                entry.lstat.return_value = Mock(st_mode=stat.S_IFDIR)
                 entries.append(entry)
             settings = Settings("url", "id", "secret", "bucket", root, "Taiel")
             storage, client = self.make_storage(["Asgard"])

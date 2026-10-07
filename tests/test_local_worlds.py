@@ -1,4 +1,5 @@
 import tempfile
+import stat
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -59,6 +60,7 @@ class LocalWorldTests(unittest.TestCase):
                 entry = Mock(spec=Path)
                 entry.name = name
                 entry.is_dir.return_value = True
+                entry.lstat.return_value = Mock(st_mode=stat.S_IFDIR)
                 rejected.append(entry)
             errors = []
             with (
@@ -99,6 +101,7 @@ class LocalWorldTests(unittest.TestCase):
                 entry = Mock(spec=Path)
                 entry.name = name
                 entry.is_dir.return_value = True
+                entry.lstat.return_value = Mock(st_mode=stat.S_IFDIR)
                 entries.append(entry)
             with patch.object(Path, "iterdir", return_value=iter(entries)):
                 with self.assertRaises(WorldNameConflictError) as caught:

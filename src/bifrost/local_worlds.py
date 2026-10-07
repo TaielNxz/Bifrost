@@ -1,12 +1,20 @@
 import os
-import re
 import shutil
+import stat
 import tempfile
 from datetime import datetime
 from pathlib import Path
 
+from .local_paths import ensure_local_path, iter_local_files
 from .models import World
-from .world_names import WorldNameConflictError, WorldNameIssue, filter_world_names, world_name_key
+from .world_names import (
+    InvalidWorldNameError,
+    WorldNameConflictError,
+    WorldNameIssue,
+    filter_world_names,
+    validate_world_name,
+    world_name_key,
+)
 
 COPIES_DIRECTORY_NAME = ".bifrost-copies"
 
@@ -29,50 +37,66 @@ def is_bifrost_directory(name: str) -> bool:
 def directory_size(directory: str | os.PathLike[str]) -> int:
     """Suma recursivamente el tamaño de los archivos de una carpeta.
 
-    Omite los archivos cuyo tamaño no puede consultar.
+    Rechaza enlaces y junctions; omite los archivos cuyo tamaño no puede consultar.
     """
     total = 0
-    for current_dir, _, files in os.walk(directory):
-        for filename in files:
-            try:
-                total += (Path(current_dir) / filename).stat().st_size
-            except OSError:
-                # Error de consulta: conserva el total parcial y continúa con otros archivos.
-                pass
+    for file_path in iter_local_files(directory):
+        try:
+            total += file_path.stat().st_size
+        except OSError:
+            # Error de consulta: conserva el total parcial y continúa con otros archivos.
+            pass
     return total
 
 
 def list_worlds(
     worlds_path: str | os.PathLike[str], *, errors: list[WorldNameIssue] | None = None
 ) -> list[World]:
-    """Lista mundos locales válidos sin conflictos, omitiendo backups y copias.
+    """Lista mundos locales utilizables, omitiendo backups y copias independientes.
 
+    Excluye nombres inválidos o ambiguos y enlaces o junctions en los mundos.
     Permite recoger los errores de nombres sin bloquear el listado de los demás mundos.
     """
     root = Path(worlds_path)
     if not root.is_dir():
         raise RuntimeError(f"La carpeta de mundos no existe:\n  {root}")
 
-    # Revisa los nombres antes de recorrer el contenido o consultar fechas de los mundos.
-    entries = {
-        entry.name: entry
-        for entry in root.iterdir()
-        if not is_backup(entry.name)
-        and not is_bifrost_directory(entry.name)
-        and entry.is_dir()
-    }
-    names = filter_world_names(entries, errors=errors)
+    # Selecciona entradas candidatas sin seguir enlaces ni incluir carpetas reservadas.
+    entries = {}
+    for entry in root.iterdir():
+        if is_backup(entry.name) or is_bifrost_directory(entry.name):
+            continue
+        # lstat identifica carpetas y enlaces sin consultar el destino de estos últimos.
+        metadata = entry.lstat()
+        if stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            entries[entry.name] = entry
 
-    # La fecha corresponde a la carpeta raíz, no al archivo más reciente de su interior.
-    return [
-        World(
-            name=name,
-            path=entries[name],
-            size_bytes=directory_size(entries[name]),
-            modified_at=datetime.fromtimestamp(entries[name].stat().st_mtime),
-        )
-        for name in names
-    ]
+    # Excluye nombres inválidos o ambiguos antes de consultar el contenido de los mundos.
+    issues: list[WorldNameIssue] = []
+    names = filter_world_names(entries, errors=issues)
+
+    # Consulta tamaño y fecha únicamente para mundos con nombres utilizables.
+    worlds = []
+    for name in names:
+        try:
+            path = ensure_local_path(root, entries[name])
+            world = World(
+                name=name,
+                path=path,
+                size_bytes=directory_size(path),
+                # La fecha es la de la carpeta raíz, no la del archivo más reciente.
+                modified_at=datetime.fromtimestamp(path.stat().st_mtime),
+            )
+        except RuntimeError as error:
+            # Error de ruta: excluye este mundo y permite continuar con los demás.
+            issues.append(InvalidWorldNameError(name, str(error)))
+            continue
+        worlds.append(world)
+
+    # Entrega los motivos de exclusión cuando el llamador solicita recogerlos.
+    if errors is not None:
+        errors.extend(issues)
+    return worlds
 
 
 def find_world(worlds_path: str | os.PathLike[str], name: str) -> World | None:
@@ -83,15 +107,38 @@ def find_world(worlds_path: str | os.PathLike[str], name: str) -> World | None:
     key = world_name_key(name)
     errors: list[WorldNameIssue] = []
     worlds = list_worlds(worlds_path, errors=errors)
+
+    # Propaga los problemas del mundo solicitado sin bloquearlo por errores de otros nombres.
     for error in errors:
         if isinstance(error, WorldNameConflictError) and world_name_key(error.names[0]) == key:
             raise error
+        if (
+            isinstance(error, InvalidWorldNameError)
+            and isinstance(error.name, str)
+            and error.name.casefold() == key
+        ):
+            raise error
+
     return next((world for world in worlds if world_name_key(world.name) == key), None)
 
 
 # ======================================================================================= #
 # Backup e instalación
 # ======================================================================================= #
+
+def _backup_destination(worlds_path: str | os.PathLike[str], name: str) -> Path:
+    """Busca una ruta de backup validada que todavía no exista."""
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    basename = f"{name}_pre_pull_{timestamp}"
+    destination = ensure_local_path(worlds_path, Path(worlds_path) / basename)
+
+    # Agrega un sufijo si otro backup ya utiliza la misma fecha y hora.
+    index = 1
+    while destination.exists():
+        destination = ensure_local_path(worlds_path, Path(worlds_path) / f"{basename}_{index}")
+        index += 1
+    return destination
+
 
 def backup_world(worlds_path: str | os.PathLike[str], name: str) -> Path | None:
     """Mueve un mundo local a un backup fechado y devuelve su ruta.
@@ -105,8 +152,8 @@ def backup_world(worlds_path: str | os.PathLike[str], name: str) -> Path | None:
         return None
 
     # Caso 2: Existe el mundo local; lo aparta de la ruta activa como backup fechado.
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    destination = Path(worlds_path) / f"{name}_pre_pull_{timestamp}"
+    destination = _backup_destination(worlds_path, world.name)
+    ensure_local_path(worlds_path, world.path)
     shutil.move(str(world.path), str(destination))
     return destination
 
@@ -118,14 +165,45 @@ def install_staged_world(
 
     Intenta restaurar el original si la instalación falla antes de crear el destino.
     """
-    # Aparta el mundo anterior antes de ocupar su ruta con el mundo preparado.
-    backup = backup_world(worlds_path, name)
-    destination = Path(worlds_path) / name
+    # Valida el nombre y las rutas antes de preparar el reemplazo.
+    validate_world_name(name)
+    world = find_world(worlds_path, name)
+    destination = ensure_local_path(
+        worlds_path, world.path if world else Path(worlds_path) / name
+    )
+    staged = Path(staged_world)
+    ensure_local_path(staged.parent, staged)
+    if not staged.is_dir():
+        raise RuntimeError(f"No existe la carpeta preparada: {str(staged)!r}.")
+
+    # Impide que el origen y el destino coincidan o que uno contenga al otro.
+    staged_resolved = staged.resolve()
+    destination_resolved = destination.resolve()
+    if (
+        staged_resolved.is_relative_to(destination_resolved)
+        or destination_resolved.is_relative_to(staged_resolved)
+    ):
+        raise RuntimeError("La carpeta preparada debe estar separada del mundo activo.")
+
+    # Revisa todo el contenido preparado para rechazar enlaces antes de apartar el original.
+    directory_size(staged)
+
+    # Error de destino: no instala sobre una entrada existente que no sea un mundo utilizable.
+    if world is None and destination.exists():
+        raise RuntimeError(f"El destino local ya está ocupado: {str(destination)!r}.")
+
+    # Aparta el mundo anterior como backup conservando su nombre real.
+    backup = backup_world(worlds_path, world.name if world else name)
+
+    # Instala la carpeta preparada después de volver a comprobar el destino.
     try:
-        shutil.move(str(staged_world), str(destination))
+        ensure_local_path(worlds_path, destination)
+        shutil.move(str(staged), str(destination))
     except Exception:
         # Error de instalación: intenta recuperar el original si el destino sigue sin existir.
         if backup is not None and not destination.exists():
+            ensure_local_path(worlds_path, backup)
+            ensure_local_path(worlds_path, destination)
             shutil.move(str(backup), str(destination))
 
         # Propaga el fallo de instalación aunque se haya podido restaurar el original.
@@ -148,26 +226,46 @@ def save_world_copy(
 
     El ZIP debe estar verificado previamente.
     """
-    # Adapta el nombre a las restricciones de Windows y limita su longitud.
-    safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", world_name).strip(" .")
-    safe_name = safe_name[:80] or "world"
+    # Valida los datos usados en el nombre de la copia antes de preparar su destino.
+    validate_world_name(world_name)
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        raise ValueError("La versión de la copia debe ser un entero positivo.")
+    if (
+        not isinstance(sha256, str)
+        or len(sha256) != 64
+        or any(character not in "0123456789abcdefABCDEF" for character in sha256)
+    ):
+        raise ValueError("El SHA-256 de la copia no es válido.")
+
+    # Comprueba que el ZIP de origen sea un archivo, sin aceptar enlaces ni junctions.
+    source = Path(source_zip)
+    ensure_local_path(source.parent, source)
+    if not source.is_file():
+        raise RuntimeError(f"No existe el ZIP de origen: {str(source)!r}.")
 
     # Guarda las copias fuera de las carpetas detectadas como mundos activos.
-    copies_directory = Path(worlds_path) / COPIES_DIRECTORY_NAME
-    copies_directory.mkdir(parents=True, exist_ok=True)
-    destination = copies_directory / f"{safe_name}_v{version}_{sha256[:12]}.zip"
+    copies_directory = ensure_local_path(worlds_path, Path(worlds_path) / COPIES_DIRECTORY_NAME)
+    destination = ensure_local_path(
+        worlds_path, copies_directory / f"{world_name}_v{version}_{sha256[:12].lower()}.zip"
+    )
+    if destination.is_dir():
+        raise RuntimeError(f"El destino de la copia ya es una carpeta: {str(destination)!r}.")
+    copies_directory.mkdir(exist_ok=True)
 
     temporary_path: Path | None = None
     try:
         # Prepara la copia en el mismo directorio antes de reemplazar el ZIP de destino.
         with tempfile.NamedTemporaryFile(
             dir=copies_directory,
-            prefix=f"{safe_name}_v{version}_",
+            prefix="bifrost-copy-",
             suffix=".tmp",
             delete=False,
         ) as temporary_file:
             temporary_path = Path(temporary_file.name)
-        shutil.copyfile(source_zip, temporary_path)
+        shutil.copyfile(source, temporary_path)
+
+        # Vuelve a comprobar el destino antes de sustituir la copia anterior, si existe.
+        ensure_local_path(worlds_path, destination)
         temporary_path.replace(destination)
     finally:
         # Limpia cualquier temporal restante, incluso si falla la copia o el reemplazo.

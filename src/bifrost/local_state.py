@@ -3,15 +3,17 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from .local_paths import ensure_local_path
 from .models import LocalBase
+from .world_names import WorldNameConflictError, filter_world_names, validate_world_name, world_name_key
 
 STATE_FILENAME = ".bifrost-state.json"
 STATE_SCHEMA_VERSION = 1
 
 
 def _state_path(worlds_path: str | Path) -> Path:
-    """Devuelve la ruta del archivo que registra las versiones base locales."""
-    return Path(worlds_path) / STATE_FILENAME
+    """Obtiene la ruta del registro de bases locales y rechaza que sea un enlace o junction."""
+    return ensure_local_path(worlds_path, Path(worlds_path) / STATE_FILENAME)
 
 
 def _empty_state() -> dict[str, Any]:
@@ -53,7 +55,10 @@ def _validate_base(world_name: str, value: object) -> LocalBase:
 
 
 def _load_state(worlds_path: str | Path) -> dict[str, Any]:
-    """Carga y valida el estado local, o devuelve uno vacío si el archivo no existe."""
+    """Carga el estado local y valida las bases de los mundos con nombres utilizables.
+
+    Conserva las entradas con nombres inválidos o ambiguos sin validar sus bases.
+    """
     path = _state_path(worlds_path)
 
     # Caso 1: No existe un estado local; permite iniciar el registro de bases.
@@ -67,27 +72,48 @@ def _load_state(worlds_path: str | Path) -> dict[str, Any]:
         # Error de lectura: no trata un estado ilegible como si fuera un registro vacío.
         raise RuntimeError(f"No se pudo leer el estado local de Bifröst: {path}") from error
 
-    # Comprueba el esquema y la lista de mundos antes de validar cada base individual.
+    # Comprueba el esquema y el mapa de mundos antes de validar cada base individual.
     if not isinstance(value, dict) or value.get("schema_version") != STATE_SCHEMA_VERSION:
         raise RuntimeError(f"El formato del estado local de Bifröst no es válido: {path}")
     worlds = value.get("worlds")
     if not isinstance(worlds, dict) or any(not isinstance(name, str) for name in worlds):
         raise RuntimeError(f"La lista de mundos del estado local no es válida: {path}")
-    for name, base in worlds.items():
-        _validate_base(name, base)
+
+    # Valida solo las bases con nombres utilizables; conserva las demás entradas intactas.
+    for name in filter_world_names(worlds):
+        _validate_base(name, worlds[name])
     return value
+
+
+def _stored_world_name(worlds: dict[str, Any], world_name: str) -> str | None:
+    """Busca el nombre registrado de un mundo sin distinguir mayúsculas.
+
+    Rechaza coincidencias ambiguas y devuelve None si no hay una entrada válida.
+    """
+    key = world_name_key(world_name)
+    errors = []
+    names = filter_world_names(worlds, errors=errors)
+
+    # Solo los conflictos del mundo solicitado bloquean la búsqueda.
+    for error in errors:
+        if isinstance(error, WorldNameConflictError) and world_name_key(error.names[0]) == key:
+            raise error
+
+    return next((name for name in names if world_name_key(name) == key), None)
 
 
 def read_base_version(worlds_path: str | Path, world_name: str) -> LocalBase | None:
     """Busca la base local por nombre sin distinguir mayúsculas, incluida su sesión opcional.
 
-    Devuelve None si el mundo no tiene una base registrada.
+    Rechaza nombres inválidos o ambiguos; devuelve None si el mundo no tiene una base registrada.
     """
+    validate_world_name(world_name)
     worlds = _load_state(worlds_path)["worlds"]
-    for stored_name, value in worlds.items():
-        # Caso 1: Encuentra el mundo; devuelve su base validada y normalizada.
-        if stored_name.casefold() == world_name.casefold():
-            return _validate_base(stored_name, value)
+    stored_name = _stored_world_name(worlds, world_name)
+
+    # Caso 1: Encuentra una entrada única; devuelve su base validada y normalizada.
+    if stored_name is not None:
+        return _validate_base(stored_name, worlds[stored_name])
 
     # Caso 2: No hay una base para ese mundo; informa su ausencia.
     return None
@@ -105,6 +131,7 @@ def save_base_version(
     Conserva las bases de los demás mundos y devuelve la base normalizada.
     """
     # Valida la nueva base antes de cargar y modificar el registro existente.
+    validate_world_name(world_name)
     value = {"version": version, "sha256": sha256}
     if session_id is not None:
         value["session_id"] = session_id
@@ -112,11 +139,9 @@ def save_base_version(
     state = _load_state(worlds_path)
     worlds = state["worlds"]
 
-    # Reemplaza entradas equivalentes para evitar duplicados por diferencias de mayúsculas.
-    for stored_name in list(worlds):
-        if stored_name.casefold() == world_name.casefold():
-            del worlds[stored_name]
-    worlds[world_name] = base
+    # Actualiza una coincidencia única sin renombrarla ni fusionar entradas en conflicto.
+    stored_name = _stored_world_name(worlds, world_name)
+    worlds[stored_name if stored_name is not None else world_name] = base
 
     state_path = _state_path(worlds_path)
     temporary_path: Path | None = None
@@ -130,9 +155,12 @@ def save_base_version(
             suffix=".tmp",
             delete=False,
         ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
             json.dump(state, temporary_file, indent=2, ensure_ascii=False)
             temporary_file.write("\n")
-            temporary_path = Path(temporary_file.name)
+
+        # Vuelve a comprobar el destino antes de sustituir el registro existente.
+        ensure_local_path(worlds_path, state_path)
         temporary_path.replace(state_path)
     finally:
         # Limpia el temporal restante tanto al completar el guardado como ante un fallo.
