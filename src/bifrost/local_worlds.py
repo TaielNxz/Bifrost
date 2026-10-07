@@ -158,6 +158,25 @@ def backup_world(worlds_path: str | os.PathLike[str], name: str) -> Path | None:
     return destination
 
 
+def check_install_destination(worlds_path: str | os.PathLike[str], name: str) -> Path:
+    """Revisa el mundo, su destino y el backup sin crear ni mover archivos."""
+    # Resuelve el mundo existente y conserva la escritura de su nombre real.
+    validate_world_name(name)
+    world = find_world(worlds_path, name)
+    destination = ensure_local_path(
+        worlds_path, world.path if world else Path(worlds_path) / name
+    )
+
+    # Error de destino: impide instalar sobre una entrada que no sea un mundo utilizable.
+    if world is None and destination.exists():
+        raise RuntimeError(f"El destino local ya está ocupado: {str(destination)!r}.")
+
+    # Comprueba también el futuro backup cuando hay un mundo que deberá apartarse.
+    if world is not None:
+        _backup_destination(worlds_path, world.name)
+    return destination
+
+
 def install_staged_world(
     worlds_path: str | os.PathLike[str], name: str, staged_world: str | os.PathLike[str]
 ) -> Path | None:
@@ -166,11 +185,7 @@ def install_staged_world(
     Intenta restaurar el original si la instalación falla antes de crear el destino.
     """
     # Valida el nombre y las rutas antes de preparar el reemplazo.
-    validate_world_name(name)
-    world = find_world(worlds_path, name)
-    destination = ensure_local_path(
-        worlds_path, world.path if world else Path(worlds_path) / name
-    )
+    destination = check_install_destination(worlds_path, name)
     staged = Path(staged_world)
     ensure_local_path(staged.parent, staged)
     if not staged.is_dir():
@@ -188,12 +203,8 @@ def install_staged_world(
     # Revisa todo el contenido preparado para rechazar enlaces antes de apartar el original.
     directory_size(staged)
 
-    # Error de destino: no instala sobre una entrada existente que no sea un mundo utilizable.
-    if world is None and destination.exists():
-        raise RuntimeError(f"El destino local ya está ocupado: {str(destination)!r}.")
-
     # Aparta el mundo anterior como backup conservando su nombre real.
-    backup = backup_world(worlds_path, world.name if world else name)
+    backup = backup_world(worlds_path, name)
 
     # Instala la carpeta preparada después de volver a comprobar el destino.
     try:
@@ -215,17 +226,13 @@ def install_staged_world(
 # Copias independientes
 # ======================================================================================= #
 
-def save_world_copy(
+def check_copy_destination(
     worlds_path: str | os.PathLike[str],
     world_name: str,
     version: int,
     sha256: str,
-    source_zip: str | os.PathLike[str],
 ) -> Path:
-    """Guarda un ZIP en .bifrost-copies sin modificar el mundo activo ni su base.
-
-    El ZIP debe estar verificado previamente.
-    """
+    """Revisa los datos y el destino de una copia sin crear archivos ni carpetas."""
     # Valida los datos usados en el nombre de la copia antes de preparar su destino.
     validate_world_name(world_name)
     if isinstance(version, bool) or not isinstance(version, int) or version < 1:
@@ -237,19 +244,38 @@ def save_world_copy(
     ):
         raise ValueError("El SHA-256 de la copia no es válido.")
 
+    # Comprueba la ruta de la copia fuera de las carpetas detectadas como mundos activos.
+    copies_directory = ensure_local_path(worlds_path, Path(worlds_path) / COPIES_DIRECTORY_NAME)
+    destination = ensure_local_path(
+        worlds_path, copies_directory / f"{world_name}_v{version}_{sha256[:12].lower()}.zip"
+    )
+
+    # Error de destino: rechaza entradas cuyo tipo impediría guardar el ZIP.
+    if destination.is_dir():
+        raise RuntimeError(f"El destino de la copia ya es una carpeta: {str(destination)!r}.")
+    if copies_directory.exists() and not copies_directory.is_dir():
+        raise RuntimeError(f"La carpeta de copias ya está ocupada: {str(copies_directory)!r}.")
+    return destination
+
+
+def save_world_copy(
+    worlds_path: str | os.PathLike[str],
+    world_name: str,
+    version: int,
+    sha256: str,
+    source_zip: str | os.PathLike[str],
+) -> Path:
+    """Guarda un ZIP previamente verificado sin modificar el mundo activo ni su base."""
+    destination = check_copy_destination(worlds_path, world_name, version, sha256)
+
     # Comprueba que el ZIP de origen sea un archivo, sin aceptar enlaces ni junctions.
     source = Path(source_zip)
     ensure_local_path(source.parent, source)
     if not source.is_file():
         raise RuntimeError(f"No existe el ZIP de origen: {str(source)!r}.")
 
-    # Guarda las copias fuera de las carpetas detectadas como mundos activos.
-    copies_directory = ensure_local_path(worlds_path, Path(worlds_path) / COPIES_DIRECTORY_NAME)
-    destination = ensure_local_path(
-        worlds_path, copies_directory / f"{world_name}_v{version}_{sha256[:12].lower()}.zip"
-    )
-    if destination.is_dir():
-        raise RuntimeError(f"El destino de la copia ya es una carpeta: {str(destination)!r}.")
+    # Crea la carpeta de copias solo después de validar el origen y el destino.
+    copies_directory = destination.parent
     copies_directory.mkdir(exist_ok=True)
 
     temporary_path: Path | None = None

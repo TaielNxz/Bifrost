@@ -29,7 +29,10 @@ class FakeStateStorage:
 
 class RemoteStateTests(unittest.TestCase):
     def test_reads_legacy_manifest_as_initial_state(self) -> None:
-        manifest = {"version": 8, "sha256": "a" * 64}
+        manifest = {
+            "version": 8, "sha256": "a" * 64, "world": "Asgard",
+            "filename": "worlds/Asgard/current/world.zip",
+        }
         snapshot = read_world_state(FakeStateStorage(manifest=manifest), "Asgard")  # type: ignore[arg-type]
 
         self.assertTrue(snapshot.legacy)

@@ -8,6 +8,7 @@ from botocore.client import Config
 from botocore.exceptions import ClientError
 
 from .config import Settings
+from .manifests import validate_manifest_identity
 from .models import Manifest, WorldLock
 from .paths import WORLDS_PREFIX, lock_key, manifest_key
 from .world_names import InvalidWorldNameError, WorldNameIssue, filter_world_names
@@ -154,9 +155,12 @@ class R2Storage:
     # ======================================================================================= #
 
     def read_manifest(self, world_name: str) -> Manifest | None:
-        """Lee el manifest heredado de un mundo, o devuelve None si no existe."""
+        """Lee el manifest heredado de un mundo y valida su identidad y ubicación de ZIP.
+
+        Devuelve None si no existe.
+        """
         value = self.get_json(manifest_key(world_name))
-        return value  # type: ignore[return-value]
+        return None if value is None else validate_manifest_identity(world_name, value)
 
     def read_lock(self, world_name: str) -> WorldLock | None:
         """Lee el lock heredado de un mundo, o devuelve None si no existe."""

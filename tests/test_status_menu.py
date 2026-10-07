@@ -46,6 +46,8 @@ class StatusMenuTests(unittest.TestCase):
             manifests={
                 "Asgard": {
                     "version": 12,
+                    "world": "Asgard",
+                    "filename": "worlds/Asgard/current/world.zip",
                     "uploaded_at": "2026-09-30T22:15:00Z",
                     "uploaded_by": "Taiel",
                     "size": 88_709_530,

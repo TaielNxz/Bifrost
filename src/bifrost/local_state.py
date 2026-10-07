@@ -119,6 +119,18 @@ def read_base_version(worlds_path: str | Path, world_name: str) -> LocalBase | N
     return None
 
 
+def check_base_destination(
+    worlds_path: str | Path, world_name: str, version: int, sha256: str
+) -> None:
+    """Revisa la nueva base y su registro local antes de instalar o adquirir un lock."""
+    # Valida los datos que se registrarían después de instalar el mundo.
+    validate_world_name(world_name)
+    _validate_base(world_name, {"version": version, "sha256": sha256})
+
+    # Detecta un registro ilegible o una coincidencia ambigua sin modificar el archivo.
+    read_base_version(worlds_path, world_name)
+
+
 def save_base_version(
     worlds_path: str | Path,
     world_name: str,

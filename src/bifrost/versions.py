@@ -1,5 +1,6 @@
 from typing import cast
 
+from .manifests import validate_manifest_identity
 from .models import Manifest
 from .paths import (
     current_zip_key,
@@ -12,6 +13,31 @@ from .storage import R2Storage
 MAX_PREVIOUS_REMOTE_VERSIONS = 5
 
 
+def read_version_manifest(
+    storage: R2Storage, world_name: str, version: int
+) -> Manifest | None:
+    """Lee un manifest histórico y comprueba que pertenezca al mundo y versión solicitados.
+
+    Devuelve None si no existe el registro.
+    """
+    value = storage.get_json(version_manifest_key(world_name, version))
+
+    # Caso 1: No hay un manifest histórico; informa la ausencia del registro.
+    if value is None:
+        return None
+
+    # Caso 2: Hay un manifest histórico; valida su identidad y la versión declarada.
+    manifest = validate_manifest_identity(world_name, value)
+
+    # Conflicto de versión: rechaza un manifest que no corresponda a la clave consultada.
+    if manifest["version"] != version:
+        raise ValueError(
+            f"El manifest histórico de {world_name!r}, versión {version}, "
+            f"declara la versión {manifest['version']!r}."
+        )
+    return manifest
+
+
 def archive_current_version(
     storage: R2Storage, world_name: str, manifest: Manifest
 ) -> bool:
@@ -19,9 +45,11 @@ def archive_current_version(
 
     Devuelve False si ya hay un manifest con la misma versión y hash, y rechaza conflictos.
     """
+    # Valida la identidad antes de consultar el historial o copiar el ZIP vigente.
+    validate_manifest_identity(world_name, manifest)
     version = manifest["version"]
     manifest_key = version_manifest_key(world_name, version)
-    archived = storage.get_json(manifest_key)
+    archived = read_version_manifest(storage, world_name, version)
 
     # Caso 1: Ya hay un manifest histórico; comprueba si corresponde a la misma versión.
     if archived is not None:
@@ -55,8 +83,10 @@ def record_published_version(
 
     Rechaza un registro existente con un hash distinto.
     """
+    # Valida la identidad antes de consultar o escribir el registro histórico.
+    validate_manifest_identity(world_name, manifest)
     key = version_manifest_key(world_name, manifest["version"])
-    existing = storage.get_json(key)
+    existing = read_version_manifest(storage, world_name, manifest["version"])
 
     # Conflicto: bloquea el reemplazo de un manifest histórico con otro hash.
     if existing is not None and existing.get("sha256") != manifest["sha256"]:
@@ -75,9 +105,9 @@ def _version_from_key(world_name: str, key: str) -> int | None:
     if not key.startswith(prefix):
         return None
 
-    # Lee solo el primer segmento relativo al historial; el resto identifica sus objetos.
+    # Reconoce versiones ASCII positivas en el primer segmento; el resto identifica sus objetos.
     segment = key[len(prefix) :].partition("/")[0]
-    if not segment.isdigit():
+    if not segment.isascii() or not segment.isdigit() or int(segment) < 1:
         return None
     return int(segment)
 
