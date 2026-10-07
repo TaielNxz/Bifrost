@@ -1,4 +1,5 @@
 import unicodedata
+from collections.abc import Iterable, Sequence
 from pathlib import PureWindowsPath
 
 _WINDOWS_FORBIDDEN_CHARACTERS = frozenset('<>:"|?*')
@@ -76,3 +77,52 @@ def world_name_key(name: object) -> str:
     """
     # Este criterio no emula exactamente la comparación del sistema de archivos de Windows.
     return validate_world_name(name).casefold()
+
+
+class WorldNameConflictError(ValueError):
+    """Identifica nombres distintos que coinciden al comparar sin distinguir mayúsculas."""
+
+    def __init__(self, names: Sequence[str]) -> None:
+        """Conserva los nombres originales y explica por qué no pueden usarse por separado."""
+        self.names = tuple(names)
+        self.reason = "coinciden al comparar sin distinguir mayúsculas"
+        labels = ", ".join(repr(name) for name in self.names)
+        super().__init__(f"Conflicto entre nombres de mundo {labels}: {self.reason}.")
+
+
+WorldNameIssue = InvalidWorldNameError | WorldNameConflictError
+
+
+def filter_world_names(
+    names: Iterable[object], *, errors: list[WorldNameIssue] | None = None
+) -> list[str]:
+    """Lista nombres válidos sin conflictos y permite recoger los motivos de exclusión.
+
+    Excluye todos los miembros de cada conflicto, conserva los nombres originales
+    y omite repeticiones exactas sin considerarlas mundos distintos.
+    """
+    groups: dict[str, list[str]] = {}
+    issues: list[WorldNameIssue] = []
+
+    # Valida cada nombre sin impedir que los demás se examinen.
+    for name in names:
+        try:
+            key = world_name_key(name)
+        except InvalidWorldNameError as error:
+            issues.append(error)
+            continue
+        valid_name = validate_world_name(name)
+        group = groups.setdefault(key, [])
+        if valid_name not in group:
+            group.append(valid_name)
+
+    # Examina todos los grupos antes de habilitar cualquiera de sus miembros.
+    valid_names = []
+    for group in groups.values():
+        if len(group) > 1:
+            issues.append(WorldNameConflictError(group))
+        else:
+            valid_names.append(group[0])
+    if errors is not None:
+        errors.extend(issues)
+    return sorted(valid_names, key=world_name_key)

@@ -1,7 +1,13 @@
 import unittest
 from pathlib import Path
 
-from bifrost.world_names import InvalidWorldNameError, validate_world_name, world_name_key
+from bifrost.world_names import (
+    InvalidWorldNameError,
+    WorldNameConflictError,
+    filter_world_names,
+    validate_world_name,
+    world_name_key,
+)
 
 
 class WorldNameTests(unittest.TestCase):
@@ -112,6 +118,42 @@ class WorldNameTests(unittest.TestCase):
             with self.subTest(name=name):
                 with self.assertRaises(InvalidWorldNameError):
                     world_name_key(name)
+
+    def test_filter_reports_invalid_names_and_keeps_other_worlds(self) -> None:
+        errors = []
+        names = filter_world_names(["Peña del Dragón", "NUL", "", "../Asgard", "Bifröst"], errors=errors)
+        self.assertEqual(names, ["Bifröst", "Peña del Dragón"])
+        self.assertEqual([error.name for error in errors], ["NUL", "", "../Asgard"])
+
+    def test_filter_excludes_every_member_of_each_case_conflict(self) -> None:
+        errors = []
+        names = filter_world_names(
+            ["Asgard", "asgard", "ASGARD", "Peña", "PEÑA", "Bifröst"], errors=errors
+        )
+        self.assertEqual(names, ["Bifröst"])
+        self.assertEqual([error.names for error in errors], [("Asgard", "asgard", "ASGARD"), ("Peña", "PEÑA")])
+        for error in errors:
+            self.assertIsInstance(error, WorldNameConflictError)
+            self.assertIn("sin distinguir mayúsculas", str(error))
+            for name in error.names:
+                self.assertIn(repr(name), str(error))
+
+    def test_filter_deduplicates_exact_names_without_hiding_case_conflicts(self) -> None:
+        errors = []
+        self.assertEqual(filter_world_names(["Asgard", "Asgard"], errors=errors), ["Asgard"])
+        self.assertEqual(errors, [])
+        self.assertEqual(filter_world_names(["Asgard", "Asgard", "asgard"], errors=errors), [])
+        self.assertEqual(errors[0].names, ("Asgard", "asgard"))
+
+    def test_filter_accepts_iterators_and_an_empty_list(self) -> None:
+        self.assertEqual(filter_world_names(iter(["Peña", "Asgard"])), ["Asgard", "Peña"])
+        self.assertEqual(filter_world_names([]), [])
+
+    def test_filter_does_not_conflate_accents_or_internal_spaces(self) -> None:
+        errors = []
+        names = ["Peña", "Pena", "Mi mundo", "Mimundo"]
+        self.assertEqual(filter_world_names(names, errors=errors), sorted(names, key=world_name_key))
+        self.assertEqual(errors, [])
 
 
 if __name__ == "__main__":

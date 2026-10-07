@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .models import World
+from .world_names import WorldNameConflictError, WorldNameIssue, filter_world_names, world_name_key
 
 COPIES_DIRECTORY_NAME = ".bifrost-copies"
 
@@ -16,12 +17,13 @@ COPIES_DIRECTORY_NAME = ".bifrost-copies"
 
 def is_backup(name: str) -> bool:
     """Indica si el nombre corresponde a una carpeta de backup local."""
-    return "_backup_" in name or "_pre_pull_" in name
+    comparison_name = name.casefold()
+    return "_backup_" in comparison_name or "_pre_pull_" in comparison_name
 
 
 def is_bifrost_directory(name: str) -> bool:
     """Indica si el nombre corresponde a la carpeta de copias independientes de Bifröst."""
-    return name == COPIES_DIRECTORY_NAME
+    return name.casefold() == COPIES_DIRECTORY_NAME.casefold()
 
 
 def directory_size(directory: str | os.PathLike[str]) -> int:
@@ -40,32 +42,51 @@ def directory_size(directory: str | os.PathLike[str]) -> int:
     return total
 
 
-def list_worlds(worlds_path: str | os.PathLike[str]) -> list[World]:
-    """Lista los mundos locales por nombre, omitiendo backups y la carpeta de copias."""
+def list_worlds(
+    worlds_path: str | os.PathLike[str], *, errors: list[WorldNameIssue] | None = None
+) -> list[World]:
+    """Lista mundos locales válidos sin conflictos, omitiendo backups y copias.
+
+    Permite recoger los errores de nombres sin bloquear el listado de los demás mundos.
+    """
     root = Path(worlds_path)
     if not root.is_dir():
         raise RuntimeError(f"La carpeta de mundos no existe:\n  {root}")
 
-    # Cada subcarpeta directa es un mundo, salvo las carpetas reservadas.
-    # La fecha corresponde a la carpeta raíz, no al archivo más reciente de su interior.
-    worlds = [
-        World(
-            name=entry.name,
-            path=entry,
-            size_bytes=directory_size(entry),
-            modified_at=datetime.fromtimestamp(entry.stat().st_mtime),
-        )
+    # Revisa los nombres antes de recorrer el contenido o consultar fechas de los mundos.
+    entries = {
+        entry.name: entry
         for entry in root.iterdir()
-        if entry.is_dir()
-        and not is_backup(entry.name)
+        if not is_backup(entry.name)
         and not is_bifrost_directory(entry.name)
+        and entry.is_dir()
+    }
+    names = filter_world_names(entries, errors=errors)
+
+    # La fecha corresponde a la carpeta raíz, no al archivo más reciente de su interior.
+    return [
+        World(
+            name=name,
+            path=entries[name],
+            size_bytes=directory_size(entries[name]),
+            modified_at=datetime.fromtimestamp(entries[name].stat().st_mtime),
+        )
+        for name in names
     ]
-    return sorted(worlds, key=lambda world: world.name.lower())
 
 
 def find_world(worlds_path: str | os.PathLike[str], name: str) -> World | None:
-    """Busca un mundo local por nombre sin distinguir mayúsculas; devuelve None si no existe."""
-    return next((world for world in list_worlds(worlds_path) if world.name.lower() == name.lower()), None)
+    """Busca un mundo válido sin distinguir mayúsculas y devuelve None si no existe.
+
+    Rechaza nombres inválidos o ambiguos en lugar de tratarlos como mundos ausentes.
+    """
+    key = world_name_key(name)
+    errors: list[WorldNameIssue] = []
+    worlds = list_worlds(worlds_path, errors=errors)
+    for error in errors:
+        if isinstance(error, WorldNameConflictError) and world_name_key(error.names[0]) == key:
+            raise error
+    return next((world for world in worlds if world_name_key(world.name) == key), None)
 
 
 # ======================================================================================= #

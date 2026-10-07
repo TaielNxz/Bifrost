@@ -1,8 +1,10 @@
 import io
 import unittest
 from contextlib import redirect_stdout
+from unittest.mock import patch
 
 from bifrost.cli import status_menu
+from bifrost.world_names import filter_world_names
 
 
 class FakeStatusStorage:
@@ -11,8 +13,8 @@ class FakeStatusStorage:
         self.manifests = manifests or {}
         self.locks = locks or {}
 
-    def list_worlds(self):
-        return self.worlds
+    def list_worlds(self, *, errors=None):
+        return filter_world_names(self.worlds, errors=errors)
 
     def read_manifest(self, world_name):
         return self.manifests.get(world_name)
@@ -36,7 +38,7 @@ def render_status(storage: FakeStatusStorage) -> str:
 class StatusMenuTests(unittest.TestCase):
     def test_empty_remote_list(self) -> None:
         output = render_status(FakeStatusStorage())
-        self.assertIn("No hay mundos en la nube.", output)
+        self.assertIn("No hay mundos disponibles en la nube.", output)
 
     def test_free_world_displays_manifest(self) -> None:
         storage = FakeStatusStorage(
@@ -102,6 +104,16 @@ class StatusMenuTests(unittest.TestCase):
     def test_invalid_manifest_json_is_reported(self) -> None:
         storage = InvalidJsonStorage(worlds=["Asgard"])
         self.assertIn("Manifest:       Inválido", render_status(storage))
+
+    def test_rejected_names_are_reported_without_reading_their_metadata(self) -> None:
+        storage = FakeStatusStorage(worlds=["NUL", "Asgard", "asgard", "Peña del Dragón"])
+        with patch.object(storage, "read_manifest", return_value=None) as reader:
+            output = render_status(storage)
+        reader.assert_called_once_with("Peña del Dragón")
+        self.assertIn("[BLOQUEADO] Nombre de mundo inválido 'NUL'", output)
+        self.assertIn("Conflicto entre nombres de mundo 'Asgard', 'asgard'", output)
+        self.assertIn("Peña del Dragón", output)
+        self.assertIn("Estado:         Libre", output)
 
 
 if __name__ == "__main__":

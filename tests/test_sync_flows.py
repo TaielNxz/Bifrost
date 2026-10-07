@@ -409,7 +409,7 @@ class SyncFlowTests(unittest.TestCase):
 
     def test_pull_list_displays_manifest_size_in_readable_format(self) -> None:
         class PullStorage:
-            def list_worlds(self):
+            def list_worlds(self, *, errors=None):
                 return ["Asgard"]
 
             def read_manifest(self, world_name):
@@ -434,7 +434,7 @@ class SyncFlowTests(unittest.TestCase):
                 self.manifest = manifest
                 self.lock = None
 
-            def list_worlds(self):
+            def list_worlds(self, *, errors=None):
                 return ["Asgard"]
 
             def read_manifest(self, world_name):
@@ -487,7 +487,7 @@ class SyncFlowTests(unittest.TestCase):
         class ConcurrentPullStorage:
             downloaded = False
 
-            def list_worlds(self):
+            def list_worlds(self, *, errors=None):
                 return ["Asgard"]
 
             def read_manifest(self, world_name):
@@ -529,7 +529,7 @@ class SyncFlowTests(unittest.TestCase):
                 self.archive = archive
                 self.manifest = manifest
 
-            def list_worlds(self):
+            def list_worlds(self, *, errors=None):
                 return ["Asgard"]
 
             def read_manifest(self, world_name):
@@ -574,7 +574,7 @@ class SyncFlowTests(unittest.TestCase):
 
     def test_copy_rejects_corrupted_download(self) -> None:
         class CorruptedStorage:
-            def list_worlds(self):
+            def list_worlds(self, *, errors=None):
                 return ["Asgard"]
 
             def read_manifest(self, world_name):
