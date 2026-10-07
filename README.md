@@ -18,6 +18,16 @@ También podés consultar el **Estado de los mundos** o **Descargar una copia**.
 
 Coordinen quién va a abrir la partida. Si un mundo aparece en uso, hablá con ese jugador antes de forzar o liberar su bloqueo.
 
+### Nombres de los mundos
+
+El nombre de cada mundo es el de su carpeta. Podés usar espacios y acentos, por ejemplo `Peña del Dragón`; Bifröst conserva el nombre tal como está escrito.
+
+Evitá nombres que sean rutas, caracteres prohibidos por Windows, nombres de dispositivos como `CON` o `NUL`, y nombres terminados en punto o espacio. Tampoco uses dos mundos cuyos nombres difieran solo en mayúsculas, como `Asgard` y `asgard`. La escritura del nombre local debe coincidir con la remota para subir o descargar para hostear.
+
+Si Bifröst muestra `[BLOQUEADO]`, el mensaje identifica el nombre o conflicto y su motivo. Los demás mundos válidos siguen disponibles. Bifröst no renombra ni migra mundos automáticamente; coordiná con el grupo cualquier corrección de un mundo compartido antes de volver a intentar.
+
+Consultá [las reglas completas de nombres y destinos](docs/world-names.md) para conocer las reservas de Bifröst, los límites de longitud y las comprobaciones de metadata remota.
+
 ## 2. Descargar, instalar y ejecutar
 
 Los siguientes pasos están pensados para Windows.
