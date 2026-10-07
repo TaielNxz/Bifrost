@@ -11,3 +11,4 @@ manifest_*.json
 *.egg-info/
 build/
 dist/
+docs/issue-drafts/
