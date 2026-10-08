@@ -1,9 +1,13 @@
 import argparse
 import tempfile
 import uuid
+import zipfile
+import zlib
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Sequence, TypeVar
+
+from botocore.exceptions import BotoCoreError, ClientError
 
 from .archives import create_zip, extract_zip, verify_zip
 from .config import Settings, load_settings
@@ -16,8 +20,8 @@ from .local_worlds import (
     list_worlds,
     save_world_copy,
 )
-from .locks import active_lock_value, build_lock
-from .manifests import build_manifest, next_version, parse_iso_datetime
+from .locks import active_lock_value, build_lock, ensure_restore_unlocked
+from .manifests import build_manifest, next_version, parse_iso_datetime, validate_manifest
 from .models import LocalBase, Manifest, World, WorldLock
 from .paths import version_upload_zip_key
 from .remote_state import (
@@ -26,10 +30,12 @@ from .remote_state import (
     read_world_state,
     updated_world_state,
 )
+from .restoration import restore_world_version
 from .storage import ConcurrentUpdateError, R2Storage
 from .versions import (
     MAX_PREVIOUS_REMOTE_VERSIONS,
     archive_current_version,
+    list_previous_versions,
     prune_remote_versions,
     read_version_manifest,
     record_published_version,
@@ -673,6 +679,119 @@ def copy_menu(settings: Settings, storage: R2Storage) -> None:
     print("[INFO] No se adquirió ningún lock ni se modificó la versión base local.")
 
 
+def restore_menu(settings: Settings, storage: R2Storage) -> None:
+    """Permite confirmar contenido histórico como una nueva versión compartida.
+
+    Conserva el estado leído al seleccionar el mundo y no modifica sus archivos ni base locales.
+    """
+    print("\n=== Restaurar una versión anterior ===\n")
+
+    try:
+        # Consulta los mundos remotos disponibles y sus versiones históricas.
+        remote_worlds = _remote_worlds(storage)
+        if not remote_worlds:
+            print("No hay mundos legibles en la nube todavía.")
+            return
+
+        # Solicita la selección del mundo; volver termina la operación.
+        selected = choose(
+            remote_worlds,
+            lambda item: (
+                f"{item[0]:<15} (versión vigente {item[1]['version']}, "
+                f"{_format_size(item[1]['size'])})"
+            ),
+        )
+        if selected is None:
+            print("\nOperación cancelada.")
+            return
+        world_name, manifest, snapshot = selected
+
+        # Valida la publicación y bloquea cualquier lock activo antes de ofrecer el historial.
+        current = validate_manifest(world_name, manifest)
+        ensure_restore_unlocked(snapshot.value["lock"])
+        previous = list_previous_versions(storage, world_name, current)
+        if not previous:
+            print(f"\n[INFO] '{world_name}' no tiene versiones anteriores publicadas disponibles.")
+            return
+
+        # Solicita la selección de la versión histórica; volver termina la operación.
+        print(f"\nVersiones anteriores de '{world_name}' (vigente: {current['version']}):\n")
+        historical = choose(
+            previous,
+            lambda item: (
+                f"Versión {item['version']}, "
+                f"fecha {parse_iso_datetime(item['uploaded_at']):%Y-%m-%d %H:%M} UTC, "
+                f"subido por {item['uploaded_by']}, {_format_size(item['size'])}"
+            ),
+            prompt="Elegí una versión anterior",
+        )
+        if historical is None:
+            print("\nOperación cancelada.")
+            return
+
+        # Explica la nueva numeración y el alcance global antes de pedir una decisión explícita.
+        new_version = current["version"] + 1
+        print(f"\n[INFO] Se publicará una nueva versión {new_version}, vigente para todo el grupo.")
+        print("    Tus archivos locales permanecerán sin cambios.")
+        print("    Después usá 'Descargar para hostear' antes de hostear o subir progreso.")
+        if not confirm(
+            f"¿Restaurar '{world_name}' con el contenido de la versión "
+            f"{historical['version']} para todo el grupo?"
+        ):
+            print("\nOperación cancelada.")
+            return
+
+        print("\n[INFO] Descargando y verificando la versión histórica...")
+        result = restore_world_version(
+            storage, world_name, historical["version"], settings.player_name, snapshot=snapshot
+        )
+    
+    except ConcurrentUpdateError as error:
+        print(f"\n[CONFLICTO] {error}")
+        print("    Volvé a consultar las versiones antes de intentar restaurar.")
+        return
+    
+    except ClientError as error:
+        # Los errores S3 se presentan sin incluir respuestas, endpoints ni credenciales.
+        if R2Storage._is_not_found(error):
+            print("\n[ERROR] No está disponible un archivo remoto necesario para restaurar.")
+        else:
+            print("\n[ERROR] No se pudo acceder a R2; revisá los permisos y la configuración.")
+        return
+    
+    except BotoCoreError:
+        print("\n[ERROR] No se pudo consultar R2; revisá la conexión y la configuración.")
+        return
+    
+    except (zipfile.BadZipFile, zlib.error):
+        print("\n[BLOQUEADO] El ZIP histórico no es válido o está dañado.")
+        return
+    
+    except OSError:
+        print("\n[ERROR] No se pudo completar la transferencia o preparar sus archivos temporales.")
+        return
+    
+    except (KeyError, TypeError, ValueError, RuntimeError) as error:
+        # Incluye respuestas inciertas del commit sin afirmar que la publicación se canceló.
+        print(f"\n[ERROR] {error}")
+        return
+
+    print(
+        f"\n[OK] '{world_name}': contenido de la versión {historical['version']} "
+        f"publicado como versión {result.manifest['version']}."
+    )
+    
+    for warning in result.warnings:
+        print(f"[ADVERTENCIA] {warning}")
+        
+    if result.removed_versions:
+        versions = ", ".join(str(version) for version in result.removed_versions)
+        print(f"[historial] Versiones antiguas eliminadas: {versions}.")
+        
+    print("[INFO] Tu mundo local y su versión base siguen sin cambios.")
+    print("    Usá 'Descargar para hostear' antes de hostear o subir progreso.")
+
+
 def lock_menu(settings: Settings, storage: R2Storage) -> None:
     """Muestra los locks y permite liberar el elegido con confirmación.
 
@@ -756,7 +875,8 @@ def run_menu(settings: Settings, storage: R2Storage) -> None:
         print("  3) Descargar para hostear")
         print("  4) Descargar una copia")
         print("  5) Ver/liberar lock")
-        print("  6) Salir")
+        print("  6) Restaurar una versión anterior")
+        print("  7) Salir")
 
         # Ejecuta la acción elegida y vuelve al menú, salvo cuando se solicita salir.
         option = input("\nElegí una opción: ").strip()
@@ -771,6 +891,8 @@ def run_menu(settings: Settings, storage: R2Storage) -> None:
         elif option == "5":
             lock_menu(settings, storage)
         elif option == "6":
+            restore_menu(settings, storage)
+        elif option == "7":
             print("\n¡Chau!")
             return
         else:

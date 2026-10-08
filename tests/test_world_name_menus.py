@@ -6,7 +6,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bifrost.cli import copy_menu, lock_menu, pull_menu, push_menu, status_menu
+from bifrost.cli import copy_menu, lock_menu, pull_menu, push_menu, restore_menu, status_menu
 from bifrost.config import Settings
 from bifrost.remote_state import StateSnapshot
 from bifrost.storage import R2Storage
@@ -40,7 +40,7 @@ class WorldNameMenuTests(unittest.TestCase):
         }, None)
 
     def test_remote_menus_report_rejections_and_only_read_valid_worlds(self) -> None:
-        for menu in (status_menu, pull_menu, copy_menu, lock_menu):
+        for menu in (status_menu, pull_menu, copy_menu, lock_menu, restore_menu):
             with self.subTest(menu=menu.__name__):
                 name = "Peña del Dragón"
                 storage, client = self.make_storage(["Asgard", "asgard", "NUL", name])
@@ -65,7 +65,7 @@ class WorldNameMenuTests(unittest.TestCase):
                 self.assertIn(name, output.getvalue())
 
     def test_remote_menus_with_only_rejected_names_do_not_offer_an_operation(self) -> None:
-        for menu in (status_menu, pull_menu, copy_menu, lock_menu):
+        for menu in (status_menu, pull_menu, copy_menu, lock_menu, restore_menu):
             with self.subTest(menu=menu.__name__):
                 storage, client = self.make_storage(["Asgard", "asgard", "NUL"])
                 settings = Settings("url", "id", "secret", "bucket", Path("."), "Taiel")
