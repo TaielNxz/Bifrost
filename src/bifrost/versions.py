@@ -1,5 +1,8 @@
+import json
+import re
 from typing import cast
 
+from .manifests import validate_manifest
 from .models import Manifest
 from .paths import (
     current_zip_key,
@@ -10,6 +13,61 @@ from .paths import (
 from .storage import R2Storage
 
 MAX_PREVIOUS_REMOTE_VERSIONS = 5
+
+
+def list_previous_versions(
+    storage: R2Storage, world_name: str, current_manifest: Manifest | None
+) -> list[Manifest]:
+    """Lista publicaciones anteriores a la vigente, de la más reciente a la más antigua.
+
+    Usa el manifest vigente ya leído y exige registros históricos válidos con ZIP versionado.
+    La consulta no escribe objetos ni verifica todavía la existencia o integridad de los ZIP.
+    """
+    # Caso 1: No hay publicación vigente; no deduce versiones publicadas a partir del historial.
+    if current_manifest is None:
+        return []
+
+    # Caso 2: Hay publicación vigente; la valida antes de consultar versiones anteriores.
+    current = validate_manifest(world_name, current_manifest)
+
+    # Solo los manifests históricos exactos identifican publicaciones; los ZIP sueltos no.
+    prefix = f"{versions_prefix(world_name)}/"
+    pattern = re.escape(prefix) + r"([1-9][0-9]*)/manifest\.json"
+    records: set[tuple[int, str]] = set()
+    for key in storage.list_keys(prefix):
+        match = re.fullmatch(pattern, key)
+        if match is not None:
+            version = int(match[1])
+            if version < current["version"]:
+                records.add((version, key))
+
+    # Lee de mayor a menor versión; un registro inválido impide devolver un listado parcial.
+    manifests: list[Manifest] = []
+    for version, key in sorted(records, reverse=True):
+        try:
+            value = storage.get_json(key)
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            # Error de interpretación: conserva la causa y detiene la consulta del historial.
+            raise RuntimeError(
+                f"No se pudo interpretar la versión histórica {version} de '{world_name}'."
+            ) from error
+
+        # Error de disponibilidad: un registro listado que desapareció no equivale a historial vacío.
+        if value is None:
+            raise RuntimeError(
+                f"El manifest histórico {version} de '{world_name}' no está disponible."
+            )
+
+        # Valida la metadata antes de comprobar su correspondencia con la clave histórica.
+        manifest = validate_manifest(world_name, value)
+
+        # Conflicto de historial: rechaza otra versión o una referencia al ZIP vigente mutable.
+        if manifest["version"] != version or manifest["filename"] == current_zip_key(world_name):
+            raise RuntimeError(
+                f"El manifest histórico {version} de '{world_name}' no corresponde a su versión."
+            )
+        manifests.append(manifest)
+    return manifests
 
 
 def archive_current_version(
