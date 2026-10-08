@@ -1,5 +1,6 @@
 import json
 import re
+import uuid
 from typing import cast
 
 from .manifests import validate_manifest
@@ -8,10 +9,11 @@ from .models import Manifest
 from .paths import (
     current_zip_key,
     version_manifest_key,
+    version_upload_zip_key,
     version_zip_key,
     versions_prefix,
 )
-from .storage import R2Storage
+from .storage import ConcurrentUpdateError, R2Storage
 
 MAX_PREVIOUS_REMOTE_VERSIONS = 5
 
@@ -173,10 +175,13 @@ def prune_remote_versions(
     storage: R2Storage,
     world_name: str,
     keep: int = MAX_PREVIOUS_REMOTE_VERSIONS,
+    *,
+    current_version: int | None = None,
 ) -> list[int]:
     """Conserva las versiones más recientes y elimina los objetos de las restantes.
 
-    Devuelve los números de versión eliminados.
+    Devuelve los números de versión eliminados. Con current_version cuenta solo registros
+    publicados hasta esa versión, protege la vigente e ignora candidatos sin manifest.
     """
     if keep < 1:
         raise ValueError("La cantidad de versiones remotas a conservar debe ser positiva.")
@@ -192,6 +197,19 @@ def prune_remote_versions(
         }
     )
 
+    if current_version is not None:
+        version_manifest_key(world_name, current_version)
+        versions = sorted(
+            {current_version}
+            | {
+                version
+                for key in keys
+                if (version := _version_from_key(world_name, key)) is not None
+                and version <= current_version
+                and key == version_manifest_key(world_name, version)
+            }
+        )
+
     # Selecciona las versiones más antiguas que exceden el límite de retención.
     removed = versions[: max(0, len(versions) - keep)]
     removed_set = set(removed)
@@ -201,3 +219,92 @@ def prune_remote_versions(
         if _version_from_key(world_name, key) in removed_set:
             storage.delete(key)
     return removed
+
+
+def read_published_version(
+    storage: R2Storage, world_name: str, version: int
+) -> Manifest | None:
+    """Lee y valida un registro histórico completo, diferenciando ausencia de JSON null."""
+    
+    # Valida la identidad antes de consultar el registro histórico.
+    key = version_manifest_key(world_name, version)
+    try:
+        value, etag = storage.get_json_with_etag(key)
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise RuntimeError("No se pudo interpretar el manifest histórico.") from error
+    
+    # Caso 1: No hay registro histórico; informa la ausencia del manifest.
+    if value is None and etag is None:
+        return None
+
+    # Caso 2: Hay registro histórico; valida su identidad y la versión declarada.
+    manifest = validate_manifest(world_name, value)
+    validate_manifest_identity(world_name, manifest)
+    
+    # Conflicto de versión: rechaza un manifest que no corresponda a la clave consultada.
+    if manifest["version"] != version or manifest["filename"] == current_zip_key(world_name):
+        raise RuntimeError("El manifest histórico no corresponde a un ZIP de su versión.")
+    return manifest
+
+
+def _same_publication(first: Manifest, second: Manifest) -> bool:
+    """Compara la publicación, permitiendo otra ubicación del ZIP preservado."""
+    return all(
+        first[field] == second[field]
+        for field in ("world", "version", "size", "sha256", "uploaded_by", "uploaded_at")
+    )
+
+
+def record_published_version_if_absent(
+    storage: R2Storage, world_name: str, manifest: Manifest
+) -> bool:
+    """Crea un registro histórico sin sobrescribirlo, incluso ante escritores concurrentes.
+
+    Devuelve False si otra operación ya registró la misma publicación.
+    """
+    manifest = validate_manifest(world_name, manifest)
+    validate_manifest_identity(world_name, manifest)
+    
+    # Rechaza un registro existente con un hash distinto; no sobrescribe el historial.
+    if manifest["filename"] == current_zip_key(world_name):
+        raise RuntimeError("El historial requiere un ZIP versionado.")
+    version = manifest["version"]
+    
+    try:
+        storage.put_json_conditional(version_manifest_key(world_name, version), manifest, None)
+    except ConcurrentUpdateError as error:
+        existing = read_published_version(storage, world_name, version)
+        if existing is not None and _same_publication(existing, manifest):
+            return False
+        raise RuntimeError(
+            f"La versión histórica {version} ya existe con otra publicación."
+        ) from error
+    return True
+
+
+def archive_current_version_conditionally(
+    storage: R2Storage, world_name: str, manifest: Manifest
+) -> bool:
+    """Preserva la publicación vigente con un registro de creación condicional.
+
+    Si el ZIP vigente es heredado, lo copia a una clave única antes de registrar el historial.
+    Una respuesta remota incierta puede dejar esa copia huérfana; nunca borra un ZIP que podría
+    haber quedado referenciado por un registro creado.
+    """
+    manifest = validate_manifest(world_name, manifest)
+    validate_manifest_identity(world_name, manifest)
+    
+    # Rechaza un registro existente con un hash distinto; no sobrescribe el historial.
+    existing = read_published_version(storage, world_name, manifest["version"])
+    if existing is not None:
+        if _same_publication(existing, manifest):
+            return False
+        raise RuntimeError("El historial de la versión vigente tiene otra publicación.")
+
+    # Copia el ZIP vigente a una clave única antes de registrar el historial.
+    if manifest["filename"] == current_zip_key(world_name):
+        filename = version_upload_zip_key(world_name, manifest["version"], uuid.uuid4().hex)
+        storage.copy(manifest["filename"], filename)
+        manifest = cast(Manifest, {**manifest, "filename": filename})
+    
+    return record_published_version_if_absent(storage, world_name, manifest)
