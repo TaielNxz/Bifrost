@@ -3,6 +3,7 @@ import io
 import shutil
 import tempfile
 import unittest
+import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -492,6 +493,55 @@ class SyncFlowTests(unittest.TestCase):
             self.assertEqual(local_base["version"], 12)
             self.assertEqual(local_base["sha256"], sha256)
             self.assertEqual(local_base["session_id"], storage.lock["session_id"])
+
+    def test_pull_unsafe_zip_preserves_local_world_and_base(self) -> None:
+        """Un ZIP con hash válido y rutas inseguras no reemplaza el mundo ni registra otra base."""
+        class DownloadStorage(FakeStorage):
+            def download_file(self, key, destination):
+                """Copia bytes del almacenamiento falso al temporal de descarga."""
+                path = Path(destination)
+                path.write_bytes(self.objects[key])
+                return path
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            worlds_root = root / "worlds"
+            world = worlds_root / "Asgard"
+            world.mkdir(parents=True)
+            (world / "save.db2").write_bytes(b"local progress")
+            save_base_version(worlds_root, "Asgard", 8, "a" * 64)
+            state_path = worlds_root / ".bifrost-state.json"
+            previous_base = state_path.read_bytes()
+            archive = root / "unsafe.zip"
+            with zipfile.ZipFile(archive, "w") as file:
+                file.writestr("safe.db2", b"remote progress")
+                file.writestr("../escape.db2", b"unsafe")
+            remote_manifest = {
+                "version": 9,
+                "world": "Asgard",
+                "filename": "worlds/Asgard/versions/9/id/world.zip",
+                "size": archive.stat().st_size,
+                "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+                "uploaded_by": "Lucas",
+                "uploaded_at": "2099-01-01T00:00:00Z",
+            }
+            storage = DownloadStorage(remote_manifest)
+            storage.objects[remote_manifest["filename"]] = archive.read_bytes()
+            settings = Settings("url", "id", "secret", "bucket", worlds_root, "Taiel")
+
+            with (
+                redirect_stdout(io.StringIO()),
+                patch("builtins.input", side_effect=["1", "s"]),
+                self.assertRaises(ValueError),
+            ):
+                pull_menu(settings, storage)  # type: ignore[arg-type]
+
+            self.assertEqual((world / "save.db2").read_bytes(), b"local progress")
+            self.assertEqual(state_path.read_bytes(), previous_base)
+            self.assertEqual({path.name for path in worlds_root.iterdir()}, {"Asgard", state_path.name})
+            self.assertEqual(list(world.iterdir()), [world / "save.db2"])
+            self.assertEqual(storage.manifest, remote_manifest)
+            self.assertIsNotNone(storage.world_lock)
 
     def test_pull_does_not_download_if_lock_commit_loses_race(self) -> None:
         class ConcurrentPullStorage:
