@@ -13,6 +13,7 @@ from bifrost.config import Settings
 from bifrost.local_state import read_base_version, save_base_version
 from bifrost.local_worlds import COPIES_DIRECTORY_NAME
 from bifrost.storage import ConcurrentUpdateError
+from bifrost.world_names import filter_world_names
 
 
 class FakeStorage:
@@ -23,6 +24,13 @@ class FakeStorage:
         self.objects: dict[str, object] = {}
         self.etags: dict[str, str] = {}
         self.etag_counter = 0
+
+    def list_worlds(self, *, errors=None):
+        """Lista los mundos del almacenamiento falso excluyendo nombres inválidos o ambiguos."""
+        names = [key.split("/")[1] for key in self.objects if key.startswith("worlds/")]
+        if self.manifest is not None:
+            names.append(self.manifest["world"])
+        return filter_world_names(names, errors=errors)
 
     def read_manifest(self, world_name):
         return self.manifest
@@ -409,12 +417,14 @@ class SyncFlowTests(unittest.TestCase):
 
     def test_pull_list_displays_manifest_size_in_readable_format(self) -> None:
         class PullStorage:
-            def list_worlds(self):
+            def list_worlds(self, *, errors=None):
                 return ["Asgard"]
 
             def read_manifest(self, world_name):
                 return {
                     "version": 12,
+                    "world": "Asgard",
+                    "filename": "worlds/Asgard/current/world.zip",
                     "size": 88_709_530,
                     "uploaded_at": "2026-09-30T22:15:00Z",
                     "uploaded_by": "Taiel",
@@ -434,7 +444,7 @@ class SyncFlowTests(unittest.TestCase):
                 self.manifest = manifest
                 self.lock = None
 
-            def list_worlds(self):
+            def list_worlds(self, *, errors=None):
                 return ["Asgard"]
 
             def read_manifest(self, world_name):
@@ -487,7 +497,7 @@ class SyncFlowTests(unittest.TestCase):
         class ConcurrentPullStorage:
             downloaded = False
 
-            def list_worlds(self):
+            def list_worlds(self, *, errors=None):
                 return ["Asgard"]
 
             def read_manifest(self, world_name):
@@ -529,7 +539,7 @@ class SyncFlowTests(unittest.TestCase):
                 self.archive = archive
                 self.manifest = manifest
 
-            def list_worlds(self):
+            def list_worlds(self, *, errors=None):
                 return ["Asgard"]
 
             def read_manifest(self, world_name):
@@ -574,12 +584,13 @@ class SyncFlowTests(unittest.TestCase):
 
     def test_copy_rejects_corrupted_download(self) -> None:
         class CorruptedStorage:
-            def list_worlds(self):
+            def list_worlds(self, *, errors=None):
                 return ["Asgard"]
 
             def read_manifest(self, world_name):
                 return {
                     "version": 4,
+                    "world": "Asgard",
                     "filename": "worlds/Asgard/current/world.zip",
                     "size": 100,
                     "sha256": "a" * 64,

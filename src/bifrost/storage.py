@@ -8,8 +8,10 @@ from botocore.client import Config
 from botocore.exceptions import ClientError
 
 from .config import Settings
+from .manifests import validate_manifest_identity
 from .models import Manifest, WorldLock
 from .paths import WORLDS_PREFIX, lock_key, manifest_key
+from .world_names import InvalidWorldNameError, WorldNameIssue, filter_world_names
 
 
 class ConcurrentUpdateError(RuntimeError):
@@ -153,24 +155,46 @@ class R2Storage:
     # ======================================================================================= #
 
     def read_manifest(self, world_name: str) -> Manifest | None:
-        """Lee el manifest heredado de un mundo, o devuelve None si no existe."""
+        """Lee el manifest heredado de un mundo y valida su identidad y ubicación de ZIP.
+
+        Devuelve None si no existe.
+        """
         value = self.get_json(manifest_key(world_name))
-        return value  # type: ignore[return-value]
+        return None if value is None else validate_manifest_identity(world_name, value)
 
     def read_lock(self, world_name: str) -> WorldLock | None:
         """Lee el lock heredado de un mundo, o devuelve None si no existe."""
         value = self.get_json(lock_key(world_name))
         return value  # type: ignore[return-value]
 
-    def list_worlds(self) -> list[str]:
-        """Lista alfabéticamente los mundos presentes bajo el prefijo remoto."""
-        # Usa el delimitador para consultar prefijos de mundos sin listar sus archivos.
-        response = self.client.list_objects_v2(
-            Bucket=self.bucket, Prefix=f"{WORLDS_PREFIX}/", Delimiter="/"
-        )
-        names = [
-            item["Prefix"].rstrip("/").split("/")[-1]
-            for item in response.get("CommonPrefixes", [])
-        ]
-        return sorted(names, key=str.lower)
+    def list_worlds(self, *, errors: list[WorldNameIssue] | None = None) -> list[str]:
+        """Lista mundos remotos válidos sin conflictos, revisando todas las páginas.
+
+        Permite recoger nombres rechazados y prefijos malformados sin ocultar mundos válidos.
+        """
+        prefix = f"{WORLDS_PREFIX}/"
+        paginator = self.client.get_paginator("list_objects_v2")
+        pages = paginator.paginate(Bucket=self.bucket, Prefix=prefix, Delimiter="/")
+        names = []
+        issues: list[WorldNameIssue] = []
+
+        # Conserva el componente exacto entre worlds/ y el último delimitador.
+        # No recorta separadores adicionales ni convierte un nombre vacío en otro mundo.
+        for page in pages:
+            for item in page.get("CommonPrefixes", []):
+                remote_prefix = item.get("Prefix")
+                if (
+                    not isinstance(remote_prefix, str)
+                    or not remote_prefix.startswith(prefix)
+                    or not remote_prefix.endswith("/")
+                ):
+                    issues.append(InvalidWorldNameError(remote_prefix, "el prefijo remoto no es válido"))
+                    continue
+                names.append(remote_prefix[len(prefix):-1])
+
+        # Los conflictos entre páginas deben detectarse antes de devolver nombres utilizables.
+        valid_names = filter_world_names(names, errors=issues)
+        if errors is not None:
+            errors.extend(issues)
+        return valid_names
 

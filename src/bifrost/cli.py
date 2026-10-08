@@ -7,8 +7,15 @@ from typing import Callable, Sequence, TypeVar
 
 from .archives import create_zip, extract_zip, verify_zip
 from .config import Settings, load_settings
-from .local_state import read_base_version, save_base_version
-from .local_worlds import find_world, install_staged_world, list_worlds, save_world_copy
+from .local_state import check_base_destination, read_base_version, save_base_version
+from .local_worlds import (
+    check_copy_destination,
+    check_install_destination,
+    find_world,
+    install_staged_world,
+    list_worlds,
+    save_world_copy,
+)
 from .locks import active_lock_value, build_lock
 from .manifests import build_manifest, next_version, parse_iso_datetime
 from .models import LocalBase, Manifest, World, WorldLock
@@ -24,7 +31,14 @@ from .versions import (
     MAX_PREVIOUS_REMOTE_VERSIONS,
     archive_current_version,
     prune_remote_versions,
+    read_version_manifest,
     record_published_version,
+)
+from .world_names import (
+    InvalidWorldNameError,
+    WorldNameConflictError,
+    WorldNameIssue,
+    world_name_key,
 )
 
 T = TypeVar("T")
@@ -42,6 +56,12 @@ def _format_size(size_bytes: int) -> str:
             return f"{size:.0f} {unit}" if unit == "bytes" else f"{size:.1f} {unit}"
         size /= 1024
     raise AssertionError("Unidad de tamaño inalcanzable")
+
+
+def _show_world_name_errors(errors: Sequence[WorldNameIssue]) -> None:
+    """Muestra los motivos por los que algunos mundos quedaron fuera del listado."""
+    for error in errors:
+        print(f"[BLOQUEADO] {error}")
 
 
 def show_world_comparison(world: World, manifest: Manifest) -> tuple[datetime, datetime]:
@@ -102,17 +122,57 @@ def choose(items: Sequence[T], formatter: Callable[[T], str], prompt: str = "Ele
 # Consulta de mundos remotos
 # ======================================================================================= #
 
+def _remote_world_names(storage: R2Storage) -> list[str]:
+    """Consulta nombres remotos utilizables e informa los rechazos sin leer sus estados."""
+    errors: list[WorldNameIssue] = []
+    names = storage.list_worlds(errors=errors)
+    _show_world_name_errors(errors)
+    return names
+
+
 def _remote_worlds(storage: R2Storage) -> list[tuple[str, Manifest, StateSnapshot]]:
-    """Lista los mundos remotos con manifest e incluye el estado leído de cada uno."""
+    """Lista los mundos remotos con manifest e incluye el estado leído de cada uno.
+
+    Omite las entradas cuya metadata no puede interpretar o presentar.
+    """
     worlds = []
-    for name in storage.list_worlds():
-        snapshot = read_world_state(storage, name)
-        manifest = snapshot.value["manifest"]
+    for name in _remote_world_names(storage):
+        try:
+            snapshot = read_world_state(storage, name)
+            manifest = snapshot.value["manifest"]
+            if manifest is not None:
+                # Revisa también los campos usados al presentar la selección.
+                parse_iso_datetime(manifest["uploaded_at"])
+                _format_size(manifest["size"])
+                manifest["uploaded_by"]
+        except (KeyError, TypeError, ValueError, RuntimeError) as error:
+            # Error de metadata: informa la exclusión y continúa con los demás mundos.
+            print(f"[BLOQUEADO] Mundo remoto {name!r}: {error}")
+            continue
 
         # Omite los mundos sin una versión publicada disponible para descargar.
         if manifest is not None:
             worlds.append((name, manifest, snapshot))
     return worlds
+
+
+def _check_remote_name(storage: R2Storage, world_name: str) -> None:
+    """Bloquea una subida si su nombre coincide con otras identidades remotas."""
+    # Recoge los nombres utilizables y muestra los motivos de exclusión del listado.
+    key = world_name_key(world_name)
+    errors: list[WorldNameIssue] = []
+    names = storage.list_worlds(errors=errors)
+    _show_world_name_errors(errors)
+
+    # Conflicto previo: bloquea el mundo solicitado si pertenece a un grupo ambiguo.
+    for error in errors:
+        if isinstance(error, WorldNameConflictError) and world_name_key(error.names[0]) == key:
+            raise error
+
+    # Conflicto de identidad: tampoco admite un nombre remoto único con otra escritura.
+    for name in names:
+        if world_name_key(name) == key and name != world_name:
+            raise WorldNameConflictError([world_name, name])
 
 
 # ======================================================================================= #
@@ -190,7 +250,12 @@ def allow_pull(settings: Settings, world_name: str, manifest: Manifest) -> bool:
 
     Pide confirmación cuando la fecha local es posterior a la remota.
     """
-    local_world = find_world(settings.worlds_path, world_name)
+    try:
+        local_world = find_world(settings.worlds_path, world_name)
+    except (InvalidWorldNameError, WorldNameConflictError) as error:
+        # Un destino ambiguo no equivale a un mundo ausente y no permite adquirir el lock.
+        print(f"\n[BLOQUEADO] {error}")
+        return False
 
     # Caso 1: No existe el mundo local; permite crearlo.
     if local_world is None:
@@ -280,9 +345,9 @@ def status_menu(storage: R2Storage) -> None:
     print("\n=== Estado de los mundos ===\n")
 
     # Consulta los mundos disponibles; una lista vacía no requiere más lecturas.
-    world_names = storage.list_worlds()
+    world_names = _remote_world_names(storage)
     if not world_names:
-        print("No hay mundos en la nube.")
+        print("No hay mundos disponibles en la nube.")
         return
 
     # Presenta la versión publicada y el lock activo de cada mundo.
@@ -317,10 +382,11 @@ def status_menu(storage: R2Storage) -> None:
                 )
                 print(f"  Lock vence:     {expiration:%Y-%m-%d %H:%M} UTC")
 
-        except (KeyError, TypeError, ValueError, RuntimeError):
+        except (KeyError, TypeError, ValueError, RuntimeError) as error:
             # Error de lectura o interpretación: informa el problema y sigue con otros mundos.
             print("  Manifest:       Inválido")
             print("  Estado:         Lock inválido")
+            print(f"  [BLOQUEADO] {world_name!r}: {error}")
 
 
 def push_menu(settings: Settings, storage: R2Storage) -> None:
@@ -331,9 +397,11 @@ def push_menu(settings: Settings, storage: R2Storage) -> None:
     print("\n=== Subir un mundo ===\n")
 
     # Busca mundos locales disponibles para publicar.
-    worlds = list_worlds(settings.worlds_path)
+    errors: list[WorldNameIssue] = []
+    worlds = list_worlds(settings.worlds_path, errors=errors)
+    _show_world_name_errors(errors)
     if not worlds:
-        print("No hay mundos locales.")
+        print("No hay mundos locales disponibles.")
         return
 
     # Solicita la selección del mundo y la confirmación de la subida.
@@ -348,11 +416,17 @@ def push_menu(settings: Settings, storage: R2Storage) -> None:
         print("\nOperación cancelada.")
         return
 
-    # Lee una sola vez el estado remoto; su ETag también se usará al publicar.
-    snapshot = read_world_state(storage, world.name)
-    remote_manifest = snapshot.value["manifest"]
-    local_base = read_base_version(settings.worlds_path, world.name)
-    world_lock = active_lock_value(snapshot.value["lock"])
+    # Valida la identidad remota y lee el estado con el ETag que se usará al publicar.
+    try:
+        _check_remote_name(storage, world.name)
+        snapshot = read_world_state(storage, world.name)
+        remote_manifest = snapshot.value["manifest"]
+        local_base = read_base_version(settings.worlds_path, world.name)
+        world_lock = active_lock_value(snapshot.value["lock"])
+    except (KeyError, TypeError, ValueError, RuntimeError) as error:
+        # Error de estado o identidad: cancela antes de preparar una subida.
+        print(f"\n[BLOQUEADO] {world.name!r}: {error}")
+        return
 
     # Comprueba que el lock autorice al jugador y su sesión.
     if not _allow_push_lock(world.name, world_lock, settings.player_name, local_base):
@@ -367,6 +441,20 @@ def push_menu(settings: Settings, storage: R2Storage) -> None:
     # Reserva una clave única para evitar que subidas concurrentes sobrescriban el ZIP.
     version = next_version(remote_manifest)
     zip_key = version_upload_zip_key(world.name, version, uuid.uuid4().hex)
+
+    # Revisa identidades históricas antes de preparar o publicar el ZIP candidato.
+    try:
+        if remote_manifest is not None:
+            read_version_manifest(storage, world.name, remote_manifest["version"])
+
+        # Conflicto de historial: impide reutilizar una versión que ya está registrada.
+        if read_version_manifest(storage, world.name, version) is not None:
+            raise RuntimeError(f"La versión histórica {version} de {world.name!r} ya existe.")
+    except (KeyError, TypeError, ValueError, RuntimeError) as error:
+        # Error de historial: cancela antes de crear el ZIP candidato.
+        print(f"\n[BLOQUEADO] {world.name!r}: {error}")
+        return
+
     with tempfile.TemporaryDirectory(prefix="bifrost-push-") as temporary_dir:
         # Prepara el ZIP y su manifest fuera de la carpeta activa del mundo.
         zip_path = create_zip(world.path, Path(temporary_dir) / "world.zip")
@@ -441,6 +529,23 @@ def pull_menu(settings: Settings, storage: R2Storage) -> None:
 
     world_name, manifest, snapshot = selected
 
+    # Revisa el destino, la base y el lock antes de confirmar o adquirir la sesión.
+    try:
+        destination = check_install_destination(settings.worlds_path, world_name)
+
+        # Conflicto de nombre: exige la misma escritura en el mundo local y el remoto.
+        if destination.name != world_name:
+            raise WorldNameConflictError([destination.name, world_name])
+
+        check_base_destination(
+            settings.worlds_path, world_name, manifest["version"], manifest["sha256"]
+        )
+        world_lock = active_lock_value(snapshot.value["lock"])
+    except (KeyError, TypeError, ValueError, RuntimeError) as error:
+        # Error de preparación: cancela sin adquirir el lock ni reemplazar el mundo.
+        print(f"\n[BLOQUEADO] {world_name!r}: {error}")
+        return
+
     # Confirma el reemplazo y comprueba si la fecha local requiere otra confirmación.
     if not confirm(f"\n¿Descargar '{world_name}' y reemplazar tu copia local?"):
         print("\nOperación cancelada.")
@@ -450,7 +555,6 @@ def pull_menu(settings: Settings, storage: R2Storage) -> None:
         return
 
     # Comprueba si se puede adquirir el lock o si es necesario confirmar uno ajeno.
-    world_lock = active_lock_value(snapshot.value["lock"])
     if not _allow_lock_override(world_lock, world_name, settings.player_name):
         print("\nOperación cancelada.")
         return
@@ -526,9 +630,21 @@ def copy_menu(settings: Settings, storage: R2Storage) -> None:
     if selected is None:
         return
 
-    # Explica el alcance de la copia y solicita confirmación antes de descargar.
+    # Explica el alcance de la copia independiente.
     print("\n[INFO] Esta descarga no reemplaza tu mundo local ni adquiere el lock.")
     world_name, manifest, _ = selected
+
+    # Revisa los datos y el destino antes de confirmar o descargar la copia.
+    try:
+        check_copy_destination(
+            settings.worlds_path, world_name, manifest["version"], manifest["sha256"]
+        )
+    except (KeyError, TypeError, ValueError, RuntimeError) as error:
+        # Error de destino o metadata: cancela sin iniciar la descarga.
+        print(f"\n[BLOQUEADO] {world_name!r}: {error}")
+        return
+
+    # Solicita confirmación una vez comprobado el destino de la copia.
     if not confirm(f"¿Guardar una copia de '{world_name}'?"):
         print("\nOperación cancelada.")
         return
@@ -566,11 +682,20 @@ def lock_menu(settings: Settings, storage: R2Storage) -> None:
 
     # Consulta el lock activo y conserva el estado leído para una posible liberación.
     lock_info = []
-    for name in storage.list_worlds():
-        snapshot = read_world_state(storage, name)
-        lock_info.append((name, active_lock_value(snapshot.value["lock"]), snapshot))
+    for name in _remote_world_names(storage):
+        try:
+            snapshot = read_world_state(storage, name)
+            world_lock = active_lock_value(snapshot.value["lock"])
+
+            # Comprueba que un lock activo incluya el jugador que se mostrará en el menú.
+            if world_lock is not None:
+                world_lock["player"]
+            lock_info.append((name, world_lock, snapshot))
+        except (KeyError, TypeError, ValueError, RuntimeError) as error:
+            # Error de metadata: excluye este mundo sin ocultar los demás locks consultables.
+            print(f"[BLOQUEADO] Mundo remoto {name!r}: {error}")
     if not lock_info:
-        print("No hay mundos en la nube.")
+        print("No hay mundos disponibles en la nube.")
         return
 
     def format_lock(item: tuple[str, WorldLock | None, StateSnapshot]) -> str:

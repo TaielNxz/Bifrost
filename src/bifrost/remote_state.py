@@ -1,9 +1,11 @@
 from dataclasses import dataclass
 from typing import cast
 
+from .manifests import validate_manifest_identity
 from .models import Manifest, WorldLock, WorldState
 from .paths import lock_key, manifest_key, state_key
 from .storage import R2Storage
+from .world_names import validate_world_name
 
 STATE_SCHEMA_VERSION = 1
 
@@ -30,9 +32,9 @@ def _validate_state(world_name: str, value: object) -> WorldState:
     if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
         raise RuntimeError(f"La revisión remota de '{world_name}' no es válida.")
     
-    # Comprueba la estructura de los objetos opcionales, sin validar sus campos internos.
-    if manifest is not None and not isinstance(manifest, dict):
-        raise RuntimeError(f"El manifest remoto de '{world_name}' no es válido.")
+    # Comprueba que el manifest presente pertenezca al mundo y use una clave de ZIP admitida.
+    if manifest is not None:
+        validate_manifest_identity(world_name, manifest)
     
     # Comprueba la estructura del lock remoto, sin validar sus campos internos.
     if world_lock is not None and not isinstance(world_lock, dict):
@@ -46,6 +48,8 @@ def read_world_state(storage: R2Storage, world_name: str) -> StateSnapshot:
 
     La reconstrucción no escribe ni migra objetos remotos.
     """
+    validate_world_name(world_name)
+
     # Consulta el estado canónico si el almacenamiento permite leer JSON con ETag.
     if hasattr(storage, "get_json_with_etag"):
         value, etag = storage.get_json_with_etag(state_key(world_name))
@@ -66,6 +70,10 @@ def read_world_state(storage: R2Storage, world_name: str) -> StateSnapshot:
         manifest = storage.read_manifest(world_name)
         world_lock = storage.read_lock(world_name) if hasattr(storage, "read_lock") else None
 
+    # Revisa la identidad del manifest heredado antes de usar su versión como revisión.
+    if manifest is not None:
+        validate_manifest_identity(world_name, manifest)
+
     # Construye una vista inicial; el primer commit condicional creará el estado canónico.
     revision = manifest["version"] if manifest is not None else 0
     legacy_state: WorldState = {
@@ -74,7 +82,10 @@ def read_world_state(storage: R2Storage, world_name: str) -> StateSnapshot:
         "manifest": manifest,
         "lock": world_lock,
     }
-    return StateSnapshot(legacy_state, None, legacy=manifest is not None or world_lock is not None)
+    return StateSnapshot(
+        _validate_state(world_name, legacy_state), None,
+        legacy=manifest is not None or world_lock is not None,
+    )
 
 
 def updated_world_state(
@@ -99,6 +110,11 @@ def commit_world_state(
 
     Devuelve el estado publicado con su nuevo ETag.
     """
+    # Valida el nombre y ambos estados antes de intentar la escritura remota.
+    validate_world_name(world_name)
+    _validate_state(world_name, snapshot.value)
+    _validate_state(world_name, value)
+
     # Usa el ETag leído para publicar manifest y lock en una misma escritura condicional.
     etag = storage.put_json_conditional(state_key(world_name), value, snapshot.etag)
     return StateSnapshot(value, etag)

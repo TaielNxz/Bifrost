@@ -30,6 +30,8 @@ Módulos del paquete:
 - `locks.py`: creación, vencimiento y persistencia de locks.
 - `archives.py`: ZIP, SHA-256 y extracción segura.
 - `paths.py`: claves del protocolo remoto.
+- `world_names.py`: validación compartida de nombres y detección de conflictos.
+- `local_paths.py`: contención de rutas locales y rechazo de enlaces, junctions y componentes demasiado largos.
 
 Dependencias: `cli → lógica especializada → filesystem/R2`. Ningún módulo debe importar `cli.py` ni usar `input()` fuera de ella. No crees conexiones remotas al importar módulos ni agregues ejecutables Python en la raíz.
 
@@ -42,6 +44,8 @@ Nunca leas, muestres ni confirmes `.env` al repositorio. Documentá variables si
 ## Modelo funcional y protocolo
 
 Cada subcarpeta directa de `VALHEIM_WORLDS_PATH` es un mundo, excepto nombres con `_backup_` o `_pre_pull_`. El ZIP conserva recursivamente todas las rutas relativas; no depende de extensiones específicas de Valheim.
+
+Los nombres siguen las reglas de `docs/world-names.md`: se preservan espacios y acentos, se rechazan rutas y restricciones de Windows y se bloquean conflictos por `casefold()`. Los manifests deben declarar el nombre remoto exacto y un ZIP ubicado bajo ese mundo en una clave admitida por el protocolo. La CLI revisa nombres y destinos antes de las mutaciones; las funciones de persistencia repiten sus controles. No renombres ni migres mundos automáticamente.
 
 Claves de R2:
 
@@ -85,7 +89,8 @@ Pull compara frescura, exige confirmación para forzar un lock ajeno y adquiere 
 - Se crean snapshots históricos remotos, pero todavía no existe un flujo de restauración; el helper de backups fechados sigue reservado.
 - La subida no verifica posteriormente el objeto remoto.
 - Un cierre abrupto antes del commit puede dejar un ZIP candidato huérfano; los conflictos controlados sí lo eliminan.
-- Falta validar/sanitizar nombres de mundo y esquemas JSON remotos.
+- La validación de identidad y ubicación remota no cubre todos los campos de los esquemas JSON remotos.
+- La detección por listado no reserva nombres remotos atómicamente ante primeras publicaciones simultáneas que difieran solo en mayúsculas; el commit condicional protege cada clave exacta de mundo.
 - El nombre del jugador no identifica de forma única una sesión o máquina.
 
 ## Criterios de trabajo y verificación

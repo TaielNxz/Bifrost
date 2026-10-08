@@ -3,6 +3,8 @@ import os
 import zipfile
 from pathlib import Path
 
+from .local_paths import iter_local_files
+
 
 def calculate_sha256(file_path: str | os.PathLike[str], block_size: int = 1024 * 1024) -> str:
     """Calcula el SHA-256 de un archivo."""
@@ -18,6 +20,7 @@ def calculate_sha256(file_path: str | os.PathLike[str], block_size: int = 1024 *
 def create_zip(source_dir: str | os.PathLike[str], destination: str | os.PathLike[str]) -> Path:
     """Comprime todos los archivos de una carpeta conservando sus rutas relativas.
 
+    Rechaza enlaces y junctions en el origen.
     Reemplaza el ZIP de destino si ya existe y devuelve su ruta.
     """
     source = Path(source_dir)
@@ -26,12 +29,17 @@ def create_zip(source_dir: str | os.PathLike[str], destination: str | os.PathLik
     # Valida el origen antes de crear o reemplazar el ZIP de destino.
     if not source.is_dir():
         raise FileNotFoundError(f"No existe la carpeta a comprimir: {source}")
+
+    # Revisa todo el árbol y rechaza enlaces antes de modificar el ZIP de destino.
+    files = sorted(path for path in iter_local_files(source) if path.is_file())
+
+    # Prepara el destino una vez completada la revisión del origen.
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     destination_path.unlink(missing_ok=True)
 
-    # Recorre también las subcarpetas, sin filtrar extensiones ni incluir rutas absolutas.
+    # Guarda los archivos de cualquier extensión usando rutas relativas al origen.
     with zipfile.ZipFile(destination_path, "w", zipfile.ZIP_DEFLATED) as archive:
-        for file_path in sorted(path for path in source.rglob("*") if path.is_file()):
+        for file_path in files:
             archive.write(file_path, arcname=file_path.relative_to(source))
     return destination_path
 
