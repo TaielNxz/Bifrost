@@ -18,7 +18,7 @@ pyproject.toml metadata, dependencias y entrypoints
 
 Módulos del paquete:
 
-- `cli.py`: interacción y coordinación de estado, push, descargas y locks.
+- `cli.py`: interacción y coordinación de estado, push, descargas, restauración y locks.
 - `config.py`: carga y validación de `.env`.
 - `models.py`: `World`, `Manifest` y `WorldLock`.
 - `local_worlds.py`: detección, backup, instalación local y copias independientes.
@@ -26,9 +26,10 @@ Módulos del paquete:
 - `storage.py`: operaciones S3/R2.
 - `remote_state.py`: snapshots y commits condicionales de `state.json`.
 - `manifests.py`: metadata, fechas y versiones.
-- `versions.py`: snapshots remotos y retención de versiones anteriores.
+- `versions.py`: listado de publicaciones, snapshots remotos y retención de versiones anteriores.
+- `restoration.py`: publicación condicional de contenido histórico como una versión nueva.
 - `locks.py`: creación, vencimiento y persistencia de locks.
-- `archives.py`: ZIP, SHA-256 y extracción segura.
+- `archives.py`: ZIP, SHA-256, validación de rutas y contenido, y extracción segura.
 - `paths.py`: claves del protocolo remoto.
 - `world_names.py`: validación compartida de nombres y detección de conflictos.
 - `local_paths.py`: contención de rutas locales y rechazo de enlaces, junctions y componentes demasiado largos.
@@ -68,13 +69,15 @@ La descarga para hostear reemplaza el mundo local, registra la base y adquiere e
 
 La opción de estado es de solo lectura: muestra por mundo la versión, fecha, autor y tamaño del manifest, además del lock activo o el estado libre.
 
+La restauración publica el contenido de una versión anterior como `vigente + 1`, con el jugador que restaura y fecha UTC nueva. La CLI confirma su efecto para todo el grupo y conserva el estado y ETag originales para el commit. Cualquier lock activo, incluso propio, o datos de lock inválidos bloquean la operación. El ZIP histórico se descarga a un temporal y se valida por SHA-256, tamaño, CRC y rutas portables antes de subir sus bytes originales a una clave única. El historial se registra por creación condicional y la retención de restauración cuenta publicaciones, sin tratar ZIP huérfanos como versiones. Los mundos, bases y copias locales permanecen intactos; hay que descargar para hostear antes de volver a subir progreso.
+
 Pull compara frescura, exige confirmación para forzar un lock ajeno y adquiere un lock de 12 horas. Descarga a un temporal, verifica SHA-256 y extrae en staging con validación de rutas. Solo entonces mueve el mundo anterior a `<nombre>_pre_pull_<timestamp>` e instala el nuevo; ante un fallo del movimiento final intenta restaurar el original. El lock permanece activo hasta el push.
 
 ## Invariantes
 
 - Nunca publiques el manifest antes de completar el ZIP correspondiente.
-- Nunca publiques sobre un manifest que no coincida con la versión y hash base locales.
-- Nunca publiques mientras exista un lock ajeno activo o no se pueda interpretar el lock.
+- Nunca publiques progreso local sobre un manifest que no coincida con la versión y hash base locales. La restauración es una operación explícita separada y no altera este control del push.
+- Nunca publiques mientras exista un lock ajeno activo o no se pueda interpretar el lock. Para restaurar, tampoco se admite un lock propio activo.
 - Nunca aceptes un ZIP cuyo SHA-256 no coincida.
 - No sobrescribas progreso más nuevo ni un lock ajeno sin confirmación explícita.
 - Todo reemplazo local debe ser recuperable y prepararse fuera de la carpeta activa.
@@ -86,7 +89,8 @@ Pull compara frescura, exige confirmación para forzar un lock ajeno y adquiere 
 ## Limitaciones conocidas
 
 - La advertencia secundaria de frescura usa el `mtime` de la carpeta raíz, que puede no representar el archivo más reciente; el control autoritativo de conflictos usa versión y hash base.
-- Se crean snapshots históricos remotos, pero todavía no existe un flujo de restauración; el helper de backups fechados sigue reservado.
+- El helper de backups fechados sigue reservado; el historial y la restauración usan `versions/`.
+- La restauración puede publicarse aunque falle después su registro histórico o retención; informa ese mantenimiento pendiente. Una respuesta incierta del commit exige consultar el estado antes de reintentar.
 - La subida no verifica posteriormente el objeto remoto.
 - Un cierre abrupto antes del commit puede dejar un ZIP candidato huérfano; los conflictos controlados sí lo eliminan.
 - La validación de identidad y ubicación remota no cubre todos los campos de los esquemas JSON remotos.

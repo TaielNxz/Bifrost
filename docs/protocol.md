@@ -40,3 +40,26 @@ El archivo de estado es local, vive directamente en `VALHEIM_WORLDS_PATH` y no s
 ## Tipos de descarga
 
 La descarga para hostear verifica y extrae el ZIP, reemplaza el mundo local de forma recuperable, registra la versión base y adquiere el lock remoto. La descarga de copia solamente verifica y guarda el ZIP en `.bifrost-copies`; no reemplaza el mundo activo, no registra una base y no adquiere ni modifica locks.
+
+## Restauración compartida
+
+`restore_world_version` publica contenido histórico mediante una operación explícita, independiente del push y de la base local. La CLI conserva el `StateSnapshot` leído antes de seleccionar el mundo y confirmar; no renueva su ETag para publicar.
+
+1. Se exige un manifest vigente válido y ausencia de locks activos, incluso del solicitante. Un lock inválido bloquea la operación aunque declare una fecha vencida. Los locks heredados sin sesión o versión base siguen siendo compatibles si sus campos presentes son válidos.
+2. El listado reconoce solo claves exactas `versions/<versión>/manifest.json`, anteriores a la vigente, con metadata válida del mismo mundo y versión. Los ZIP sin registro, las claves auxiliares y los registros de versiones actuales o futuras no se ofrecen como versiones anteriores.
+3. La selección requiere confirmación explícita del efecto para todo el grupo. Volver o rechazarla termina sin descargas de ZIP ni mutaciones locales o remotas.
+4. Se vuelve a validar el registro elegido y se descarga su ZIP a un temporal. Se verifican SHA-256, tamaño, legibilidad, CRC y rutas relativas portables antes de preservar el historial o subir un candidato. Se admiten las ubicaciones históricas con y sin `upload-id`; un registro histórico no puede apuntar al `current/world.zip` mutable.
+5. Se preserva el registro de la vigente mediante creación condicional. Si su ZIP usa la clave heredada mutable, se copia primero a una clave versionada única. Los registros existentes se conservan si describen la misma publicación; una discrepancia bloquea la operación. Un registro ya existente para la siguiente versión también impide reutilizar su número.
+6. Se suben los bytes originales del ZIP verificado a `versions/<vigente + 1>/<upload-id>/world.zip`. El nuevo manifest conserva tamaño y SHA-256 del contenido histórico, declara el número siguiente y registra al jugador que restaura y una fecha UTC nueva.
+7. Solo después de completar ese ZIP se publica `state.json` con el ETag original, o con `If-None-Match: *` al crear estado canónico desde metadata heredada. La revisión aumenta y el commit publica el manifest y deja el lock en `null` atómicamente. No adquiere un lock de hosting.
+8. Tras confirmar el commit, el registro de la nueva versión se crea con `If-None-Match: *`, sin sobrescribir historial. Para la retención se consulta la versión vigente más reciente y se conserva esa versión y hasta cinco anteriores publicadas. Los directorios sin registro y los futuros no cuentan como publicaciones. Se eliminan todos los objetos de las versiones publicadas que exceden el límite, incluidos sus ZIP candidatos.
+
+Por ejemplo, recuperar la versión 5 sobre la vigente 8 publica la versión 9. El ZIP histórico y los registros conservados mantienen su identidad; no se cambia el número de la publicación anterior ni se reescribe su autoría.
+
+Un conflicto de precondición conserva el estado ganador y elimina únicamente el ZIP candidato de la restauración. Si falla ese borrado, se informa que quedó un candidato. Ante una respuesta incierta del commit se conserva el ZIP, porque podría ser el oficialmente publicado; la CLI indica consultar el estado antes de reintentar.
+
+Un fallo del historial o de la retención después del commit se devuelve como aviso de mantenimiento pendiente junto a la publicación confirmada. No revierte el estado ni elimina su ZIP. Los fallos de acceso o conexión se distinguen de objetos ausentes sin mostrar respuestas S3, endpoints ni credenciales.
+
+La operación no recibe una ruta de mundos, no instala contenido ni modifica `.bifrost-state.json` o `.bifrost-copies`. El push normal sigue exigiendo versión, SHA-256 y sesión base coincidentes. Después de restaurar hay que descargar la nueva vigente mediante el flujo de hosting antes de publicar progreso desde ella.
+
+Las pruebas locales recorren la CLI, el dominio, el adaptador `R2Storage` con S3 en memoria y carpetas temporales. Cubren restauración, copia, bloqueo de una base anterior, pull con backup y sesión, push posterior, compatibilidad heredada, cancelación, corrupción y conflictos. No acceden a R2 ni usan mundos reales.

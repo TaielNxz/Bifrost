@@ -18,6 +18,25 @@ También podés consultar el **Estado de los mundos** o **Descargar una copia**.
 
 Coordinen quién va a abrir la partida. Si un mundo aparece en uso, hablá con ese jugador antes de forzar o liberar su bloqueo.
 
+### Restaurar una versión anterior
+
+Si el mundo compartido tiene un problema, elegí **Restaurar una versión anterior** para recuperar contenido del historial.
+
+1. Elegí el mundo y una de sus versiones anteriores publicadas. La lista muestra número, fecha UTC, autor y tamaño; los ZIP de subidas interrumpidas no aparecen como versiones.
+2. Revisá la confirmación: el contenido elegido pasará a ser el mundo vigente **para todo el grupo**.
+3. Confirmá con `s`. Restaurar la versión 5 cuando la vigente es la 8 crea la **versión 9**, con tu nombre y la fecha de la restauración. Los números siguen aumentando.
+4. Antes de jugar o subir progreso, usá **Descargar para hostear** para recibir la nueva vigente.
+
+La restauración conserva tus mundos locales, sus registros de base y las copias independientes existentes. Una base anterior bloquea el push; **Descargar una copia** guarda un ZIP de la nueva vigente y tampoco habilita a publicar desde esa base.
+
+Para restaurar no puede haber ninguna sesión de hosting activa, incluida la tuya. Los datos de bloqueo inválidos también impiden continuar. Coordiná con el grupo la finalización de cualquier sesión en curso.
+
+Podés elegir `0` en cualquiera de los listados o rechazar la confirmación para cancelar sin cambiar archivos locales, bases, locks ni estado compartido. Bifröst verifica el archivo histórico antes de publicarlo; un archivo ausente, metadata inválida, rutas inseguras o un fallo de integridad bloquean la restauración y conservan la versión vigente. Si otro jugador publica o cambia el lock durante la operación, volvé a consultar las versiones.
+
+Si aparece **«No se pudo confirmar la publicación»**, consultá **Estado de los mundos** antes de reintentar: la respuesta remota pudo perderse después de publicar. Una **[ADVERTENCIA]** de historial o retención después de **[OK]** indica que la nueva versión ya fue publicada y quedó mantenimiento incompleto.
+
+La restauración recupera el mundo compartido. Para jugar se descarga la nueva vigente; el menú no instala ni guarda una copia independiente de la versión histórica elegida.
+
 ### Nombres de los mundos
 
 El nombre de cada mundo es el de su carpeta. Podés usar espacios y acentos, por ejemplo `Peña del Dragón`; Bifröst conserva el nombre tal como está escrito.
@@ -84,7 +103,8 @@ Vas a encontrar estas opciones:
 3) Descargar para hostear
 4) Descargar una copia
 5) Ver/liberar lock
-6) Salir
+6) Restaurar una versión anterior
+7) Salir
 ```
 
 Si el grupo todavía no subió ningún mundo, quien tenga el original debe elegir **Subir un mundo** para compartirlo por primera vez.
